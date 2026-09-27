@@ -463,7 +463,16 @@ function fieldQuestionText(field: FormField, form: FormInfo): string {
   return parts.join("\n\n") || field.key;
 }
 
-function toQuestionInfo(field: FormField, form: FormInfo): QuestionInfo {
+/**
+ * A question built from a form field: each choice also carries the value the server expects,
+ * and `custom` is stated the way the server enforces it — only an explicit `true` lets a
+ * non-choice answer through.
+ */
+type FormQuestionInfo = QuestionInfo & {
+  options: Array<QuestionInfo["options"][number] & { value?: string }>;
+};
+
+function toQuestionInfo(field: FormField, form: FormInfo): FormQuestionInfo {
   const question = fieldQuestionText(field, form);
   const header = fieldHeader(field, form);
   if (field.type === "multiselect") {
@@ -473,8 +482,10 @@ function toQuestionInfo(field: FormField, form: FormInfo): QuestionInfo {
       options: field.options.map((option) => ({
         label: option.label,
         description: option.description ?? "",
+        value: option.value,
       })),
       multiple: true,
+      custom: field.custom === true,
     };
   }
   if (field.type === "string" && field.options && field.options.length > 0) {
@@ -484,7 +495,9 @@ function toQuestionInfo(field: FormField, form: FormInfo): QuestionInfo {
       options: field.options.map((option) => ({
         label: option.label,
         description: option.description ?? "",
+        value: option.value,
       })),
+      custom: field.custom === true,
     };
   }
   if (field.type === "boolean") {
@@ -492,9 +505,10 @@ function toQuestionInfo(field: FormField, form: FormInfo): QuestionInfo {
       question,
       header,
       options: [
-        { label: "true", description: "" },
-        { label: "false", description: "" },
+        { label: "true", description: "", value: "true" },
+        { label: "false", description: "", value: "false" },
       ],
+      custom: false,
     };
   }
   return { question, header, options: [] };
@@ -514,9 +528,12 @@ export function toV1Question(form: FormInfo): QuestionRequest {
 
 function optionValue(
   options: ReadonlyArray<{ value: string; label: string }> | undefined,
-  label: string,
+  item: string,
 ): string {
-  return options?.find((option) => option.label === label)?.value ?? label;
+  if (options?.some((option) => option.value === item)) {
+    return item;
+  }
+  return options?.find((option) => option.label === item)?.value ?? item;
 }
 
 function toFieldAnswer(
@@ -526,7 +543,7 @@ function toFieldAnswer(
   const first = answer[0];
   switch (field.type) {
     case "multiselect":
-      return answer.map((label) => optionValue(field.options, label));
+      return answer.map((item) => optionValue(field.options, item));
     case "string":
       return first === undefined ? undefined : optionValue(field.options, first);
     case "boolean":

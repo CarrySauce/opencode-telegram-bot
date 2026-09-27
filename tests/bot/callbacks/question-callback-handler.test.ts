@@ -514,4 +514,61 @@ describe("bot question menu/callbacks", () => {
       expect.objectContaining({ answers: [["Only mine"]] }),
     );
   });
+
+  it("offers the custom answer button only when the question accepts one", async () => {
+    const keyboardRows = async (question: Question): Promise<string[]> => {
+      const api = createApi([900]);
+      container.questionManager.startQuestions([question], "req-custom-flag");
+      await showCurrentQuestion(api, 123, createDeps());
+      const options = vi.mocked(api.sendRichMessage).mock.calls[0]?.[2] as {
+        reply_markup: { inline_keyboard: Array<Array<{ callback_data: string }>> };
+      };
+      return options.reply_markup.inline_keyboard.map((row) => defined(row[0]).callback_data);
+    };
+
+    expect(await keyboardRows({ ...QUESTION_ONE, custom: false })).toEqual([
+      "question:select:0:0",
+      "question:select:0:1",
+      "question:cancel:0",
+    ]);
+    expect(await keyboardRows({ ...MULTIPLE_QUESTION, custom: false })).toEqual([
+      "question:select:0:0",
+      "question:select:0:1",
+      "question:submit:0",
+      "question:cancel:0",
+    ]);
+    expect(await keyboardRows(QUESTION_ONE)).toContain("question:custom:0");
+    expect(await keyboardRows({ ...QUESTION_ONE, custom: true })).toContain("question:custom:0");
+    expect(
+      await keyboardRows({ header: "Free", question: "Type it", options: [], custom: false }),
+    ).toEqual(["question:custom:0", "question:cancel:0"]);
+  });
+
+  it("sends the tapped choice's value and shows its label in the summary", async () => {
+    const api = createApi([910, 911]);
+    const searchQuestion: Question = {
+      header: "Web search",
+      question: "Allow OpenCode to search the web?",
+      custom: false,
+      options: [
+        { label: "Allow search via Exa", description: "", value: "allow" },
+        { label: "Disable web search", description: "", value: "disable" },
+      ],
+    };
+
+    container.questionManager.startQuestions([searchQuestion, QUESTION_ONE], "req-values");
+    await showCurrentQuestion(api, 123, createDeps());
+    await pressButton("question:select:0:0", 910, api);
+    await pressButton("question:select:1:1", 911, api);
+
+    expect(mocked.questionReplyMock).toHaveBeenCalledWith({
+      requestID: "req-values",
+      directory: "D:/repo",
+      answers: [["allow"], ["* No: decline"]],
+    });
+    expect(api.sendMessage).toHaveBeenLastCalledWith(
+      123,
+      expect.stringContaining(t("question.summary.answer", { answer: "* Allow search via Exa: " })),
+    );
+  });
 });

@@ -137,6 +137,58 @@ describe("questionManager", () => {
     ]);
   });
 
+  it("sends choice values while the summary keeps the display lines", () => {
+    const singleWithValues: Question = {
+      question: "Allow web search?",
+      header: "search",
+      custom: false,
+      options: [
+        { label: "Allow search via Exa", description: "", value: "allow" },
+        { label: "Disable web search", description: "", value: "disable" },
+      ],
+    };
+    const multipleWithValues: Question = {
+      question: "Pick colours",
+      header: "colours",
+      multiple: true,
+      custom: true,
+      options: [
+        { label: "Red", description: "The colour red", value: "r" },
+        { label: "Green", description: "Line one\nline two", value: "g" },
+      ],
+    };
+    questionManager.startQuestions([singleWithValues, multipleWithValues], "req-values");
+
+    questionManager.selectOption(0, 1);
+    questionManager.selectOption(1, 1);
+    questionManager.selectOption(1, 0);
+    questionManager.setCustomAnswer(1, "Blue");
+
+    expect(questionManager.getReplyItems(0)).toEqual(["disable"]);
+    expect(questionManager.getReplyItems(1)).toEqual(["g", "r", "Blue"]);
+    expect(questionManager.getAllAnswers()).toEqual([
+      { question: "Allow web search?", answer: "* Disable web search: " },
+      {
+        question: "Pick colours",
+        answer: "* Green: Line one\nline two\n* Red: The colour red\nBlue",
+      },
+    ]);
+  });
+
+  it("sends choices without a value as today's display lines", () => {
+    questionManager.startQuestions([SINGLE_QUESTION, MULTIPLE_QUESTION, SINGLE_QUESTION], "req-v1");
+
+    questionManager.selectOption(0, 0);
+    questionManager.selectOption(1, 2);
+    questionManager.selectOption(1, 0);
+    questionManager.setCustomAnswer(1, "Line one\nline two");
+    questionManager.setCustomAnswer(2, "First line\nSecond line");
+
+    for (const index of [0, 1, 2]) {
+      expect(questionManager.getReplyItems(index)).toEqual(questionManager.getAnswerItems(index));
+    }
+  });
+
   it("does not toggle a custom answer that was never entered", () => {
     questionManager.startQuestions([MULTIPLE_QUESTION], "req-3e");
 

@@ -245,7 +245,7 @@ async function sendAllAnswersToAgent(
   const allAnswers: string[][] = [];
 
   for (let i = 0; i < totalQuestions; i++) {
-    allAnswers.push(questionManager.getAnswerItems(i));
+    allAnswers.push(questionManager.getReplyItems(i));
   }
 
   logger.info(
@@ -410,7 +410,11 @@ function isHighSurrogate(codeUnit: number): boolean {
 }
 
 function buildQuestionKeyboard(
-  question: { options: Array<{ label: string; description: string }>; multiple?: boolean },
+  question: {
+    options: Array<{ label: string; description: string }>;
+    multiple?: boolean;
+    custom?: boolean;
+  },
   selectedOptions: Set<number>,
   deps: QuestionDataDeps,
 ): InlineKeyboard {
@@ -444,8 +448,11 @@ function buildQuestionKeyboard(
     logger.debug(`[QuestionHandler] Added submit button`);
   }
 
-  keyboard.text(t("question.button.custom"), `question:custom:${questionIndex}`).row();
-  logger.debug(`[QuestionHandler] Added custom answer button`);
+  // A question without choices can only be answered with custom text
+  if (question.options.length === 0 || question.custom !== false) {
+    keyboard.text(t("question.button.custom"), `question:custom:${questionIndex}`).row();
+    logger.debug(`[QuestionHandler] Added custom answer button`);
+  }
 
   keyboard.text(t("question.button.cancel"), `question:cancel:${questionIndex}`);
   logger.debug(`[QuestionHandler] Added cancel button`);

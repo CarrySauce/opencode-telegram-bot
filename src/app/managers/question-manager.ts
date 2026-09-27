@@ -1,6 +1,10 @@
-import type { Question, QuestionState, QuestionAnswer } from "../types/question.js";
+import type { Question, QuestionOption, QuestionState, QuestionAnswer } from "../types/question.js";
 import type { InteractionManager } from "./interaction-manager.js";
 import { logger } from "../../utils/logger.js";
+
+function formatOptionLine(option: QuestionOption): string {
+  return `* ${option.label}: ${option.description}`;
+}
 
 export class QuestionManager {
   constructor(private readonly interactionManager: InteractionManager) {}
@@ -105,7 +109,7 @@ export class QuestionManager {
     const selected = state.selectedOptions.get(questionIndex) || new Set();
     const options = Array.from(selected).flatMap((idx) => {
       const opt = question.options[idx];
-      return opt ? [`* ${opt.label}: ${opt.description}`] : [];
+      return opt ? [formatOptionLine(opt)] : [];
     });
 
     return options.join("\n");
@@ -177,6 +181,41 @@ export class QuestionManager {
 
     const items = selectedAnswer.split("\n").filter((part) => part.trim());
     if (customAnswer && this.isCustomAnswerSelected(questionIndex)) {
+      items.push(customAnswer);
+    }
+
+    return items;
+  }
+
+  /**
+   * The answer items sent to OpenCode for one question. A choice that carries a value is
+   * sent as that value; one without is sent as its display line, like `getAnswerItems`.
+   */
+  getReplyItems(questionIndex: number): string[] {
+    const question = this.state?.questions[questionIndex];
+    if (!question) {
+      return [];
+    }
+
+    const customAnswer = this.getCustomAnswer(questionIndex);
+    if (!question.multiple && customAnswer) {
+      return this.getAnswerItems(questionIndex);
+    }
+
+    const items = Array.from(this.getSelectedOptions(questionIndex)).flatMap((idx) => {
+      const opt = question.options[idx];
+      if (!opt) {
+        return [];
+      }
+      if (opt.value !== undefined) {
+        return [opt.value];
+      }
+      return formatOptionLine(opt)
+        .split("\n")
+        .filter((part) => part.trim());
+    });
+
+    if (question.multiple && customAnswer && this.isCustomAnswerSelected(questionIndex)) {
       items.push(customAnswer);
     }
 

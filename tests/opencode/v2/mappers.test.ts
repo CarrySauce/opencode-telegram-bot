@@ -73,6 +73,77 @@ describe("opencode/v2/mappers", () => {
     expect(request.questions[4]?.question).toContain("https://example.com/auth");
   });
 
+  it("carries each choice's value and states whether a custom answer is accepted", () => {
+    const form = createForm([
+      {
+        key: "provider",
+        type: "string",
+        custom: false,
+        options: [
+          { value: "allow", label: "Allow search via Exa", description: "Default" },
+          { value: "disable", label: "Disable web search" },
+        ],
+      },
+      { key: "color", type: "string", options: [{ value: "r", label: "Red" }] },
+      {
+        key: "tags",
+        type: "multiselect",
+        custom: true,
+        options: [{ value: "a", label: "A" }],
+      },
+      { key: "ok", type: "boolean" },
+      { key: "note", type: "string" },
+    ]);
+
+    const [provider, color, tags, ok, note] = toV1Question(form).questions;
+
+    expect(provider?.options).toEqual([
+      { label: "Allow search via Exa", description: "Default", value: "allow" },
+      { label: "Disable web search", description: "", value: "disable" },
+    ]);
+    expect(provider?.custom).toBe(false);
+    expect(color?.custom).toBe(false);
+    expect(tags?.custom).toBe(true);
+    expect(tags?.options).toEqual([{ label: "A", description: "", value: "a" }]);
+    expect(ok?.options).toEqual([
+      { label: "true", description: "", value: "true" },
+      { label: "false", description: "", value: "false" },
+    ]);
+    expect(ok?.custom).toBe(false);
+    expect(note).not.toHaveProperty("custom");
+  });
+
+  it("converts chosen values, including one that is another choice's label", () => {
+    const form = createForm([
+      {
+        key: "pick",
+        type: "string",
+        options: [
+          { value: "b", label: "a" },
+          { value: "a", label: "b" },
+        ],
+      },
+      {
+        key: "tags",
+        type: "multiselect",
+        custom: true,
+        options: [
+          { value: "x", label: "X" },
+          { value: "y", label: "Y" },
+        ],
+      },
+      { key: "yes", type: "boolean" },
+      { key: "no", type: "boolean" },
+    ]);
+
+    expect(toFormAnswer(form, [["a"], ["x", "y", "typed"], ["true"], ["false"]])).toEqual({
+      pick: "a",
+      tags: ["x", "y", "typed"],
+      yes: true,
+      no: false,
+    });
+  });
+
   it("converts the chosen labels and typed answers back into form values", () => {
     const form = createForm([
       {
