@@ -55,6 +55,13 @@ export interface V2ClientExtension {
       cancel: (params: { sessionID: string; inboxID: string }) => Promise<Result<true>>;
     };
   };
+  location: {
+    /**
+     * Rebuilds every loaded location from a fresh config; pending permissions and forms are
+     * cancelled, running sessions continue. Resolves once the rebuilds settle.
+     */
+    reload: () => Promise<Result<true>>;
+  };
 }
 
 interface CommandParams {
@@ -368,6 +375,13 @@ export function createV2OpencodeClient(options: V2ClientOptions): OpencodeClient
     },
     project: {
       list: () => run(async () => (await client.project.list()).map(toV1Project)),
+    },
+    location: {
+      reload: () =>
+        run(async () => {
+          await client.location.reload();
+          return true as const;
+        }),
     },
     experimental: {
       session: {

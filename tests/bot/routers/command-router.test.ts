@@ -58,6 +58,24 @@ describe("bot/routers/command-router", () => {
     ]);
   });
 
+  it("registers /reload after /opencode_stop only on V2", async () => {
+    vi.stubEnv("OPENCODE_SERVER_VERSION", "v2");
+    vi.resetModules();
+    const router = await import("../../../src/bot/routers/command-router.js");
+    const bot = { command: vi.fn(), use: vi.fn() };
+
+    router.registerCommandRouter(bot as never, { container: createTestAppContainer() });
+
+    const commands = bot.command.mock.calls.map(([command]) => command);
+    expect(commands.slice(commands.indexOf("opencode_stop"), commands.indexOf("opencode_stop") + 2)).toEqual([
+      "opencode_stop",
+      "reload",
+    ]);
+
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
   it("flushes a pending prompt before routing a command", async () => {
     const bot = { command: vi.fn(), use: vi.fn() };
     const next = vi.fn();

@@ -10,6 +10,7 @@ import type {
 } from "../../app/types/interaction.js";
 import { QUEUED_PROMPT_BUTTON_TEXT_PATTERN } from "../message-patterns.js";
 import type { LocalCommandRegistry } from "../../app/services/local-command-registry.js";
+import { isKnownCommand } from "../routers/command-utils.js";
 
 export type InteractionGuardDecisionDeps = Pick<
   AppContainer,
@@ -21,6 +22,17 @@ const BUSY_ALLOWED_COMMAND_SET = new Set<string>(BUSY_ALLOWED_COMMANDS);
 
 function isBusyAllowedCommand(command: string | undefined, localCommandRegistry?: LocalCommandRegistry): boolean {
   return Boolean(command && (BUSY_ALLOWED_COMMAND_SET.has(command) || localCommandRegistry?.allowsWhenBusy(command)));
+}
+
+// Allowed while a task runs, but not over an interaction: the server would cancel it under the user.
+const BUSY_ALLOWED_OUTSIDE_INTERACTION_COMMANDS = new Set<string>(["/reload"]);
+
+function isBusyAllowedOutsideInteraction(command: string | undefined): boolean {
+  return Boolean(
+    command &&
+    BUSY_ALLOWED_OUTSIDE_INTERACTION_COMMANDS.has(command) &&
+    isKnownCommand(command.slice(1)),
+  );
 }
 
 function allowsBusyInteraction(kind: InteractionKind | undefined): boolean {
@@ -170,6 +182,9 @@ export function resolveInteractionGuardDecision(
         return createBusyBlockDecision(inputType, state, "command_not_allowed", command);
       }
       if (isBusyAllowedCommand(command, localCommandRegistry)) {
+        return createAllowDecision(inputType, state, command, true);
+      }
+      if (!state && isBusyAllowedOutsideInteraction(command)) {
         return createAllowDecision(inputType, state, command, true);
       }
 

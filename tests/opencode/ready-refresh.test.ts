@@ -41,6 +41,7 @@ vi.mock("../../src/utils/logger.js", () => ({
 import { OpencodeReadyLifecycle } from "../../src/opencode/ready-lifecycle.js";
 import {
   __resetReadyRefreshForTests,
+  refreshModelCatalogAfterConfigReload,
   refreshSessionCacheAfterOpencodeReady,
   refreshSessionCacheIfOpencodeReady,
   stopModelCatalogWait,
@@ -148,6 +149,16 @@ describe("opencode/ready-refresh", () => {
     await refreshSessionCacheAfterOpencodeReady("opencode_start_success");
 
     expect(mocked.startModelCatalogWarmupMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reloads the model catalog through the warm-up window without the session cache", async () => {
+    await refreshModelCatalogAfterConfigReload();
+
+    expect(mocked.startModelCatalogWarmupMock).toHaveBeenCalledTimes(1);
+    expect(mocked.reconcileStoredModelSelectionMock).toHaveBeenCalledWith({
+      forceCatalogRefresh: true,
+    });
+    expect(mocked.warmupSessionDirectoryCacheMock).not.toHaveBeenCalled();
   });
 
   it("logs refresh failures without throwing", async () => {

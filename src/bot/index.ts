@@ -6,8 +6,7 @@ import {
   configureAttachPresentation,
   restoreAttachedCurrentSession,
 } from "../app/services/attach-service.js";
-import { getStoredModel } from "../app/services/model-selection-service.js";
-import { waitForLateModelCatalogSettle } from "../opencode/ready-refresh.js";
+import { refreshModelViewsAfterLateCatalogSettle } from "./services/model-views.js";
 import { logger } from "../utils/logger.js";
 import { safeBackgroundTask } from "../utils/safe-background-task.js";
 import { withTelegramRateLimitRetry } from "../utils/telegram-rate-limit-retry.js";
@@ -73,25 +72,6 @@ function isTelegramApiErrorResponse(response: unknown): response is TelegramApiE
     typeof Reflect.get(response, "error_code") === "number" &&
     typeof Reflect.get(response, "description") === "string"
   );
-}
-
-// The restore drew the dashboard before the server listed the selected model's provider.
-function refreshModelViewsAfterLateCatalogSettle(container: AppContainer, reason: string): void {
-  safeBackgroundTask({
-    taskName: "bot.refreshModelViewsAfterLateCatalogSettle",
-    task: async () => {
-      if (!(await waitForLateModelCatalogSettle())) {
-        return;
-      }
-
-      await container.pinnedMessageManager.refreshContextLimit();
-      await container.pinnedMessageManager.refresh();
-      if (container.keyboardManager.isInitialized()) {
-        container.keyboardManager.updateModel(getStoredModel());
-      }
-      logger.info(`[Bot] Refreshed model views after the model catalog settled: reason=${reason}`);
-    },
-  });
 }
 
 export function createBot(

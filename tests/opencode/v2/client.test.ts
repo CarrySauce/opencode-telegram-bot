@@ -23,6 +23,7 @@ const fake = vi.hoisted(() => ({
     form: { list: vi.fn() },
     permission: { request: { list: vi.fn() }, reply: vi.fn() },
     event: { subscribe: vi.fn() },
+    location: { reload: vi.fn() },
   },
 }));
 
@@ -220,6 +221,26 @@ describe("opencode/v2/client", () => {
       sessionID: "ses-1",
       inboxID: "msg-a",
     });
+  });
+
+  it("reloads the server configuration", async () => {
+    fake.client.location.reload.mockResolvedValue(undefined);
+    const client = createClient() as unknown as V2ClientExtension;
+
+    const result = await client.location.reload();
+
+    expect(result).toEqual({ data: true, error: undefined });
+    expect(fake.client.location.reload).toHaveBeenCalledOnce();
+  });
+
+  it("reports a rejected reload as the call's error", async () => {
+    const error = new Error("Invalid config");
+    fake.client.location.reload.mockRejectedValue(error);
+    const client = createClient() as unknown as V2ClientExtension;
+
+    const result = await client.location.reload();
+
+    expect(result).toEqual({ data: undefined, error });
   });
 
   it("reports a refused admission as the call's error", async () => {

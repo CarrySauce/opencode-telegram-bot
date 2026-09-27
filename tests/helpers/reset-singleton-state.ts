@@ -11,6 +11,7 @@ export async function resetSingletonState(): Promise<void> {
     { __resetServerHealthStateForTests },
     modelSelectionModule,
     readyRefreshModule,
+    configReloadModule,
     loggerModule,
   ] = await Promise.all([
     import("../../src/opencode/events.js"),
@@ -24,6 +25,7 @@ export async function resetSingletonState(): Promise<void> {
     import("../../src/opencode/server-health.js"),
     import("../../src/app/services/model-selection-service.js"),
     import("../../src/opencode/ready-refresh.js"),
+    import("../../src/app/services/config-reload-service.js"),
     import("../../src/utils/logger.js"),
   ]);
 
@@ -50,6 +52,13 @@ export async function resetSingletonState(): Promise<void> {
     typeof readyRefreshModule.__resetReadyRefreshForTests === "function"
   ) {
     readyRefreshModule.__resetReadyRefreshForTests();
+  }
+
+  if (
+    "__resetConfigReloadForTests" in configReloadModule &&
+    typeof configReloadModule.__resetConfigReloadForTests === "function"
+  ) {
+    configReloadModule.__resetConfigReloadForTests();
   }
 
   if (

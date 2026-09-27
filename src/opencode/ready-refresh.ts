@@ -147,6 +147,15 @@ async function refreshModelCatalogAfterReady(reason: string): Promise<void> {
   });
 }
 
+/**
+ * A config reload registers providers again the way a server start does: the same warm-up
+ * window and catalog wait, without the session cache warm-up a reload does not affect.
+ */
+export async function refreshModelCatalogAfterConfigReload(): Promise<void> {
+  startModelCatalogWarmup();
+  await refreshModelCatalogAfterReady("config_reload");
+}
+
 export async function isOpencodeServerHealthy(): Promise<boolean> {
   return (await checkOpencodeHealth()).healthy;
 }
