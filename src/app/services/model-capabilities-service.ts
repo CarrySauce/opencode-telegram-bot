@@ -1,31 +1,17 @@
-import { opencodeClient } from "../../opencode/client.js";
 import { logger } from "../../utils/logger.js";
-import { getMissingExpectedProviders } from "./model-selection-service.js";
+import { readProvidersWhenListed } from "./model-selection-service.js";
 import type { Model } from "@opencode-ai/sdk/v2";
 
 interface ModelCapabilitiesCache {
-  [key: string]: Model["capabilities"] | null;
+  [key: string]: Model["capabilities"];
 }
 
 const capabilitiesCache: ModelCapabilitiesCache = {};
 
-async function rememberUnlistedModel(cacheKey: string, providerIds: string[]): Promise<void> {
-  const missingProviders = await getMissingExpectedProviders(providerIds);
-
-  if (missingProviders.length > 0) {
-    // The server may still be registering these providers; do not remember that as an answer.
-    logger.debug(
-      `[ModelCapabilities] Providers list lacks expected providers; not caching ${cacheKey}: missing=${missingProviders.join(",")}`,
-    );
-    return;
-  }
-
-  capabilitiesCache[cacheKey] = null;
-}
-
 /**
  * Get model capabilities from OpenCode API
- * Results are cached in memory per model
+ * Capabilities of a listed model are cached in memory per model; an unlisted model is not,
+ * so the next file asks the server again.
  */
 export async function getModelCapabilities(
   providerID: string,
@@ -40,7 +26,7 @@ export async function getModelCapabilities(
 
   try {
     logger.debug(`[ModelCapabilities] Fetching capabilities for ${cacheKey}`);
-    const response = await opencodeClient.config.providers();
+    const response = await readProvidersWhenListed(providerID);
 
     if (response.error || !response.data) {
       logger.error("[ModelCapabilities] API returned error:", response.error);
@@ -59,10 +45,6 @@ export async function getModelCapabilities(
 
     if (!provider) {
       logger.warn(`[ModelCapabilities] Provider ${providerID} not found`);
-      await rememberUnlistedModel(
-        cacheKey,
-        providers.map((p) => p.id),
-      );
       return null;
     }
 
@@ -70,10 +52,6 @@ export async function getModelCapabilities(
 
     if (!model) {
       logger.warn(`[ModelCapabilities] Model ${cacheKey} not found in provider`);
-      await rememberUnlistedModel(
-        cacheKey,
-        providers.map((p) => p.id),
-      );
       return null;
     }
 

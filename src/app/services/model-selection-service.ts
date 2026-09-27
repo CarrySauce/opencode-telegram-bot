@@ -33,8 +33,13 @@ export interface StoredModelReconcileResult {
   storedModelReplaced: boolean;
 }
 
+const fetchProvidersList = () => opencodeClient.config.providers();
+type ProvidersResponse = Awaited<ReturnType<typeof fetchProvidersList>>;
+
 const MODEL_CATALOG_CACHE_TTL_MS = 10 * 60 * 1000;
 const MODEL_CATALOG_WARMUP_MS = 60 * 1000;
+const EXPECTED_PROVIDERS_WAIT_MS = 10 * 1000;
+const EXPECTED_PROVIDERS_POLL_INTERVAL_MS = 500;
 
 let cachedValidModelKeys: Set<string> | null = null;
 let cachedAllModels: FavoriteModel[] | null = null;
@@ -43,7 +48,11 @@ let cachedModelsByProvider: Map<string, FavoriteModel[]> | null = null;
 let cachedCatalogComplete = false;
 let modelCatalogCacheExpiresAt = 0;
 let modelCatalogFetchInFlight: Promise<ModelCatalogReadResult> | null = null;
+let modelCatalogWaitedFetchInFlight: Promise<ModelCatalogReadResult> | null = null;
 let modelCatalogWarmupEndsAt = 0;
+// Providers still not listed after a full wait; no wait is spent on them until one lists them.
+const providersPresumedGone = new Set<string>();
+const providersWaitsInFlight = new Map<string, Promise<ProvidersResponse>>();
 
 const SEARCH_RESULTS_LIMIT = 10;
 
@@ -116,6 +125,8 @@ function clearModelCatalogCache(): void {
  */
 export function startModelCatalogWarmup(): void {
   modelCatalogWarmupEndsAt = Date.now() + MODEL_CATALOG_WARMUP_MS;
+  // The server registers every provider again, so none of them counts as gone any more.
+  providersPresumedGone.clear();
 }
 
 export function isModelCatalogWarmupActive(): boolean {
@@ -160,8 +171,80 @@ export async function getMissingExpectedProviders(
   return Array.from(expectedProviderIds).filter((providerId) => !listedProviderIds.has(providerId));
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function readProvidersUntilListed(
+  providerID: string | undefined,
+): Promise<ProvidersResponse> {
+  const wantedProviderIds = providerID ? [providerID] : Array.from(await getExpectedProviderIds());
+  const startedAt = Date.now();
+
+  for (;;) {
+    const response = await fetchProvidersList();
+    if (response.error || !response.data) {
+      return response;
+    }
+
+    // A provider without models is not listed yet: a waking location lists none for a moment.
+    const listedProviderIds = new Set(
+      response.data.providers
+        .filter((provider) => Object.keys(provider.models).length > 0)
+        .map((provider) => provider.id),
+    );
+    for (const providerId of listedProviderIds) {
+      providersPresumedGone.delete(providerId);
+    }
+
+    const awaitedProviderIds = wantedProviderIds.filter(
+      (providerId) => !listedProviderIds.has(providerId) && !providersPresumedGone.has(providerId),
+    );
+    if (awaitedProviderIds.length === 0) {
+      return response;
+    }
+
+    if (Date.now() - startedAt >= EXPECTED_PROVIDERS_WAIT_MS) {
+      for (const providerId of awaitedProviderIds) {
+        providersPresumedGone.add(providerId);
+      }
+      logger.warn(
+        `[ModelManager] Providers still not listed after ${EXPECTED_PROVIDERS_WAIT_MS}ms, treating them as gone: missing=${awaitedProviderIds.join(",")}`,
+      );
+      return response;
+    }
+
+    logger.debug(
+      `[ModelManager] Providers list lacks awaited providers, retrying: missing=${awaitedProviderIds.join(",")}`,
+    );
+    await delay(EXPECTED_PROVIDERS_POLL_INTERVAL_MS);
+  }
+}
+
+/**
+ * Read the providers list, waiting (bounded) while it lacks a provider the caller needs:
+ * a location OpenCode unloaded while idle lists its providers a few seconds after waking.
+ * A provider still missing after the full wait counts as gone and is not waited for again
+ * until a list names it or the server starts again. A failed read is returned at once.
+ * @param providerID Wait only for this provider; omitted, wait for every expected provider
+ */
+export function readProvidersWhenListed(providerID?: string): Promise<ProvidersResponse> {
+  const waitKey = providerID ?? "";
+  const inFlight = providersWaitsInFlight.get(waitKey);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const read = readProvidersUntilListed(providerID).finally(() => {
+    providersWaitsInFlight.delete(waitKey);
+  });
+  providersWaitsInFlight.set(waitKey, read);
+  return read;
+}
+
 async function readModelCatalog(options?: {
   force?: boolean | undefined;
+  waitForExpectedProviders?: boolean | undefined;
 }): Promise<ModelCatalogReadResult> {
   if (!options?.force && cachedValidModelKeys && Date.now() < modelCatalogCacheExpiresAt) {
     logger.debug(
@@ -170,15 +253,22 @@ async function readModelCatalog(options?: {
     return { validModelKeys: cachedValidModelKeys, isStale: false, isComplete: true };
   }
 
-  if (modelCatalogFetchInFlight) {
+  // A waiting read never joins a plain one, which could hand it a list still missing providers.
+  const waitForExpectedProviders = options?.waitForExpectedProviders ?? false;
+  const inFlight = waitForExpectedProviders
+    ? modelCatalogWaitedFetchInFlight
+    : modelCatalogFetchInFlight;
+  if (inFlight) {
     logger.debug("[ModelManager] Awaiting in-flight model catalog refresh");
-    return modelCatalogFetchInFlight;
+    return inFlight;
   }
 
-  modelCatalogFetchInFlight = (async () => {
+  const read = (async (): Promise<ModelCatalogReadResult> => {
     try {
       logger.debug("[ModelManager] Refreshing model catalog from OpenCode API");
-      const response = await opencodeClient.config.providers();
+      const response = waitForExpectedProviders
+        ? await readProvidersWhenListed()
+        : await fetchProvidersList();
 
       if (response.error || !response.data) {
         logModelCatalogRefreshFailure(response.error, "error");
@@ -267,15 +357,25 @@ async function readModelCatalog(options?: {
 
       return { validModelKeys: null, isStale: false, isComplete: false };
     } finally {
-      modelCatalogFetchInFlight = null;
+      if (waitForExpectedProviders) {
+        modelCatalogWaitedFetchInFlight = null;
+      } else {
+        modelCatalogFetchInFlight = null;
+      }
     }
   })();
 
-  return modelCatalogFetchInFlight;
+  if (waitForExpectedProviders) {
+    modelCatalogWaitedFetchInFlight = read;
+  } else {
+    modelCatalogFetchInFlight = read;
+  }
+  return read;
 }
 
+// The model menu shows favorites and recent, so it waits for all their providers.
 async function getValidModelKeys(): Promise<Set<string> | null> {
-  return (await readModelCatalog()).validModelKeys;
+  return (await readModelCatalog({ waitForExpectedProviders: true })).validModelKeys;
 }
 
 function normalizeFavoriteModels(state: OpenCodeModelState): FavoriteModel[] {
@@ -497,7 +597,10 @@ export async function reconcileStoredModelSelection(options?: {
 export function __resetModelCatalogCacheForTests(): void {
   clearModelCatalogCache();
   modelCatalogFetchInFlight = null;
+  modelCatalogWaitedFetchInFlight = null;
   modelCatalogWarmupEndsAt = 0;
+  providersPresumedGone.clear();
+  providersWaitsInFlight.clear();
 }
 
 /**

@@ -90,6 +90,7 @@ import {
   getMissingExpectedProviders,
   getProviderModels,
   getProviders,
+  readProvidersWhenListed,
   reconcileStoredModelSelection,
   searchModels,
   startModelCatalogWarmup,
@@ -119,6 +120,8 @@ describe("app/services/model-selection-service", () => {
     vi.useRealTimers();
     resetCurrentModelState();
     __resetModelCatalogCacheForTests();
+    // Menu reads wait for the providers named in model.json; never read the real one.
+    process.env.XDG_STATE_HOME = path.join(os.tmpdir(), "opencode-model-test-no-state");
 
     loggerInfoMock.mockReset();
     loggerWarnMock.mockReset();
@@ -613,24 +616,20 @@ describe("app/services/model-selection-service", () => {
       expect(providersMock).toHaveBeenCalledTimes(2);
     });
 
-    it("hides a favorite until its provider is listed, then shows it", async () => {
+    it("does not cache a list lacking a favorite's provider, and the menu shows it once listed", async () => {
       await setupMockModelFile({
         favorite: [{ providerID: "commandcode", modelID: "deepseek-v4" }],
         recent: [],
       });
       startModelCatalogWarmup();
       providersMock.mockResolvedValueOnce(createProvidersResponse(BUILT_IN_ONLY));
+      await reconcileStoredModelSelection({ forceCatalogRefresh: true });
       providersMock.mockResolvedValue(createProvidersResponse(WITH_PLUGIN_PROVIDER));
 
-      const first = await getModelSelectionLists();
-      const second = await getModelSelectionLists();
+      const lists = await getModelSelectionLists();
       await getModelSelectionLists();
 
-      expect(first.favorites).not.toContainEqual({
-        providerID: "commandcode",
-        modelID: "deepseek-v4",
-      });
-      expect(second.favorites).toContainEqual({
+      expect(lists.favorites).toContainEqual({
         providerID: "commandcode",
         modelID: "deepseek-v4",
       });
@@ -660,11 +659,206 @@ describe("app/services/model-selection-service", () => {
     });
   });
 
+  describe("waiting for providers after a location wakes", () => {
+    const BUILT_IN_ONLY = {
+      opencode: ["big-pickle"],
+      openai: ["gpt-4o"],
+    };
+    const WITH_PLUGIN_PROVIDER = {
+      ...BUILT_IN_ONLY,
+      commandcode: ["deepseek-v4"],
+    };
+
+    function listedProviderIds(response: Awaited<ReturnType<typeof readProvidersWhenListed>>) {
+      return (response.data?.providers ?? []).map((provider) => provider.id);
+    }
+
+    // Waiting for the expected providers first reads model.json, which is real file IO.
+    async function untilProviderReads(count: number): Promise<void> {
+      await vi.waitFor(() => expect(providersMock.mock.calls.length).toBeGreaterThanOrEqual(count));
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      setCurrentModelState({ providerID: "commandcode", modelID: "deepseek-v4" });
+    });
+
+    it("returns at once when every awaited provider is listed", async () => {
+      providersMock.mockResolvedValue(createProvidersResponse(WITH_PLUGIN_PROVIDER));
+
+      await readProvidersWhenListed();
+
+      expect(providersMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("reads again until the missing provider is listed", async () => {
+      providersMock.mockResolvedValueOnce(createProvidersResponse(BUILT_IN_ONLY));
+      providersMock.mockResolvedValue(createProvidersResponse(WITH_PLUGIN_PROVIDER));
+
+      const read = readProvidersWhenListed("commandcode");
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(listedProviderIds(await read)).toContain("commandcode");
+      expect(providersMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("waits past a list with no models", async () => {
+      providersMock.mockResolvedValueOnce(createProvidersResponse({}));
+      providersMock.mockResolvedValueOnce(createProvidersResponse({ commandcode: [] }));
+      providersMock.mockResolvedValue(createProvidersResponse(WITH_PLUGIN_PROVIDER));
+
+      const read = readProvidersWhenListed("commandcode");
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(listedProviderIds(await read)).toContain("commandcode");
+      expect(providersMock).toHaveBeenCalledTimes(3);
+    });
+
+    it("waits for one provider without waiting for the favorites' providers", async () => {
+      setCurrentModelState({ providerID: "openai", modelID: "gpt-4o" });
+      await setupMockModelFile({
+        favorite: [{ providerID: "commandcode", modelID: "deepseek-v4" }],
+        recent: [],
+      });
+      providersMock.mockResolvedValue(createProvidersResponse(BUILT_IN_ONLY));
+
+      await readProvidersWhenListed("openai");
+      expect(providersMock).toHaveBeenCalledTimes(1);
+
+      const fullRead = readProvidersWhenListed();
+      await untilProviderReads(2);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(providersMock).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await fullRead;
+    });
+
+    it("gives up after 10 s and does not wait for that provider again until it is listed", async () => {
+      providersMock.mockResolvedValue(createProvidersResponse(BUILT_IN_ONLY));
+
+      const read = readProvidersWhenListed();
+      await untilProviderReads(1);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(listedProviderIds(await read)).not.toContain("commandcode");
+      const callsAfterWait = providersMock.mock.calls.length;
+
+      await readProvidersWhenListed();
+      expect(providersMock).toHaveBeenCalledTimes(callsAfterWait + 1);
+
+      providersMock.mockResolvedValueOnce(createProvidersResponse(WITH_PLUGIN_PROVIDER));
+      await readProvidersWhenListed();
+      const waitingAgain = readProvidersWhenListed();
+      await untilProviderReads(callsAfterWait + 3);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(providersMock).toHaveBeenCalledTimes(callsAfterWait + 4);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await waitingAgain;
+    });
+
+    it("keeps a provider given up on while lists name it without models", async () => {
+      setCurrentModelState({ providerID: "openai", modelID: "gpt-4o" });
+      await setupMockModelFile({
+        favorite: [{ providerID: "commandcode", modelID: "deepseek-v4" }],
+        recent: [],
+      });
+      providersMock.mockResolvedValue(createProvidersResponse(BUILT_IN_ONLY));
+      const read = readProvidersWhenListed();
+      await untilProviderReads(1);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await read;
+
+      providersMock.mockResolvedValue(
+        createProvidersResponse({ ...BUILT_IN_ONLY, commandcode: [] }),
+      );
+      await reconcileStoredModelSelection({ forceCatalogRefresh: true });
+      const callsBefore = providersMock.mock.calls.length;
+      await readProvidersWhenListed();
+
+      expect(providersMock).toHaveBeenCalledTimes(callsBefore + 1);
+    });
+
+    it("waits again for a provider given up on once the server starts again", async () => {
+      providersMock.mockResolvedValue(createProvidersResponse(BUILT_IN_ONLY));
+      const read = readProvidersWhenListed();
+      await untilProviderReads(1);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await read;
+      const callsAfterWait = providersMock.mock.calls.length;
+
+      startModelCatalogWarmup();
+      const waitingAgain = readProvidersWhenListed();
+      await untilProviderReads(callsAfterWait + 1);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(providersMock).toHaveBeenCalledTimes(callsAfterWait + 2);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await waitingAgain;
+    });
+
+    it("returns a failed read at once", async () => {
+      providersMock.mockResolvedValue({ data: null, error: new TypeError("fetch failed") });
+
+      const response = await readProvidersWhenListed();
+
+      expect(response.error).toBeInstanceOf(TypeError);
+      expect(providersMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("shares one wait between concurrent callers", async () => {
+      providersMock.mockResolvedValueOnce(createProvidersResponse(BUILT_IN_ONLY));
+      providersMock.mockResolvedValue(createProvidersResponse(WITH_PLUGIN_PROVIDER));
+
+      const first = readProvidersWhenListed();
+      const second = readProvidersWhenListed();
+      await untilProviderReads(1);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(await second).toBe(await first);
+      expect(providersMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("makes the model menu wait, but not the stored-model check", async () => {
+      providersMock.mockResolvedValue(createProvidersResponse(BUILT_IN_ONLY));
+      startModelCatalogWarmup();
+
+      await reconcileStoredModelSelection({ forceCatalogRefresh: true });
+      expect(providersMock).toHaveBeenCalledTimes(1);
+
+      providersMock.mockResolvedValue(createProvidersResponse(WITH_PLUGIN_PROVIDER));
+      providersMock.mockResolvedValueOnce(createProvidersResponse(BUILT_IN_ONLY));
+      const providers = getProviders();
+      await untilProviderReads(2);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect((await providers).map((provider) => provider.id)).toContain("commandcode");
+      expect(providersMock).toHaveBeenCalledTimes(3);
+    });
+
+    it("does not hand a menu read the stored-model check's in-flight list", async () => {
+      let resolveCheckRead: (value: unknown) => void = () => {};
+      providersMock.mockImplementationOnce(
+        () => new Promise((resolve) => (resolveCheckRead = resolve)),
+      );
+      providersMock.mockResolvedValue(createProvidersResponse(WITH_PLUGIN_PROVIDER));
+      startModelCatalogWarmup();
+
+      const check = reconcileStoredModelSelection({ forceCatalogRefresh: true });
+      const menu = getProviders();
+      resolveCheckRead(createProvidersResponse(BUILT_IN_ONLY));
+      await check;
+
+      expect((await menu).map((provider) => provider.id)).toContain("commandcode");
+      expect(providersMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe("empty model catalog", () => {
     it("is not cached: the next read asks the server again", async () => {
       providersMock.mockResolvedValueOnce(createProvidersResponse({}));
 
-      await expect(getProviders()).resolves.toEqual([]);
+      await expect(reconcileStoredModelSelection()).resolves.toMatchObject({
+        catalogAvailable: false,
+      });
       const providers = await getProviders();
 
       expect(providersMock).toHaveBeenCalledTimes(2);
@@ -679,7 +873,9 @@ describe("app/services/model-selection-service", () => {
     it("treats providers without models as an empty catalog", async () => {
       providersMock.mockResolvedValueOnce(createProvidersResponse({ openai: [] }));
 
-      await expect(searchModels("gpt")).resolves.toEqual([]);
+      await expect(reconcileStoredModelSelection()).resolves.toMatchObject({
+        catalogAvailable: false,
+      });
       await expect(searchModels("gpt")).resolves.not.toHaveLength(0);
       expect(providersMock).toHaveBeenCalledTimes(2);
     });
@@ -690,11 +886,11 @@ describe("app/services/model-selection-service", () => {
 
       await reconcileStoredModelSelection({ forceCatalogRefresh: true });
 
-      providersMock
-        .mockResolvedValueOnce(createProvidersResponse({}))
-        .mockResolvedValueOnce(createProvidersResponse({}));
-      await expect(getProviders()).resolves.toEqual([]);
-      await expect(getProviderModels("openai")).resolves.toEqual([]);
+      providersMock.mockResolvedValueOnce(createProvidersResponse({}));
+      await expect(reconcileStoredModelSelection()).resolves.toMatchObject({
+        catalogAvailable: false,
+      });
+      expect(providersMock).toHaveBeenCalledTimes(3);
     });
   });
 
@@ -780,6 +976,7 @@ describe("app/services/model-selection-service", () => {
 
     it("uses the provider display name when available", async () => {
       __resetModelCatalogCacheForTests();
+      setCurrentModelState({ providerID: "openai", modelID: "gpt-4o" });
       providersMock.mockResolvedValueOnce({
         data: {
           providers: [

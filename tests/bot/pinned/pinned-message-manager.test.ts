@@ -19,6 +19,7 @@ const mocked = vi.hoisted(() => ({
   getPinnedDashboardEnabled: vi.fn().mockReturnValue(true),
   getStoredModel: vi.fn().mockReturnValue(null),
   getModelContextLimit: vi.fn().mockResolvedValue(204800),
+  waitForModelContextLimit: vi.fn().mockResolvedValue(null),
   getGitWorktreeContext: vi.fn(),
   formatModelDisplayName: vi.fn(() => "test-model"),
 }));
@@ -41,6 +42,7 @@ vi.mock("../../../src/app/services/model-selection-service.js", () => ({ getStor
 vi.mock("../../../src/app/services/model-context-limit-service.js", () => ({
   DEFAULT_CONTEXT_LIMIT: 204800,
   getModelContextLimit: mocked.getModelContextLimit,
+  waitForModelContextLimit: mocked.waitForModelContextLimit,
 }));
 vi.mock("../../../src/i18n/index.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../src/i18n/index.js")>();
@@ -106,6 +108,8 @@ describe("pinned/manager", () => {
     mocked.formatModelDisplayName.mockReturnValue("test-model");
     mocked.getStoredModel.mockReturnValue({ providerID: "openai", modelID: "gpt-5" });
     mocked.getModelContextLimit.mockResolvedValue(204800);
+    mocked.waitForModelContextLimit.mockReset();
+    mocked.waitForModelContextLimit.mockResolvedValue(null);
     mocked.getPinnedMessageId.mockReturnValue(null);
     mocked.getPinnedDashboardEnabled.mockReturnValue(true);
     mocked.opencodeClient.session.messages.mockResolvedValue({ data: [] });
@@ -737,6 +741,55 @@ describe("pinned/manager", () => {
       await pinnedMessageManager.refreshContextLimit();
 
       expect(pinnedMessageManager.getContextLimit()).toBe(1_000_000);
+    });
+
+    it("fills in the model's own limit on the same message once its provider is listed", async () => {
+      mocked.waitForModelContextLimit.mockResolvedValue(1_000_000);
+      const keyboardUpdate = vi.fn();
+      pinnedMessageManager.setOnKeyboardUpdate(keyboardUpdate);
+
+      await pinnedMessageManager.onSessionChange("ses-1", "Test Session");
+
+      await vi.waitFor(() => expect(pinnedMessageManager.getContextLimit()).toBe(1_000_000));
+      expect(mocked.waitForModelContextLimit).toHaveBeenCalledWith("openai", "gpt-5");
+      await vi.waitFor(() =>
+        expect(fakeApi.editMessageText).toHaveBeenCalledWith(123, 999, expect.any(String)),
+      );
+      expect(fakeApi.sendMessage).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(keyboardUpdate).toHaveBeenLastCalledWith(0, 1_000_000));
+    });
+
+    it("fills in the limit after restoring an existing session", async () => {
+      mocked.getPinnedMessageId.mockReturnValue(777);
+      pinnedMessageManager.initialize(fakeApi as never, 123);
+      mocked.waitForModelContextLimit.mockResolvedValue(1_000_000);
+
+      await pinnedMessageManager.restoreExistingSession("ses-1", "Restored session");
+
+      await vi.waitFor(() => expect(pinnedMessageManager.getContextLimit()).toBe(1_000_000));
+    });
+
+    it("does not edit the message when the limit drawn was already the model's own", async () => {
+      mocked.waitForModelContextLimit.mockResolvedValue(204800);
+
+      await pinnedMessageManager.onSessionChange("ses-1", "Test Session");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(fakeApi.editMessageText).not.toHaveBeenCalled();
+    });
+
+    it("drops a limit that arrives after the session changed", async () => {
+      let resolveFirstLimit: (limit: number | null) => void = () => {};
+      mocked.waitForModelContextLimit.mockImplementationOnce(
+        () => new Promise((resolve) => (resolveFirstLimit = resolve)),
+      );
+
+      await pinnedMessageManager.onSessionChange("ses-1", "Test Session");
+      await pinnedMessageManager.onSessionChange("ses-2", "Other Session");
+      resolveFirstLimit(1_000_000);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(pinnedMessageManager.getContextLimit()).toBe(204800);
     });
 
     it("falls back to the default limit when the model lookup fails", async () => {

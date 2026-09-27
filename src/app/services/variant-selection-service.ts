@@ -1,9 +1,8 @@
 /**
  * Variant Manager - manages model variants (reasoning modes)
  */
-import { opencodeClient } from "../../opencode/client.js";
 import { getCurrentModel, setCurrentModel } from "../stores/settings-store.js";
-import { getStoredModel } from "./model-selection-service.js";
+import { getStoredModel, readProvidersWhenListed } from "./model-selection-service.js";
 import { logger } from "../../utils/logger.js";
 import type { VariantInfo } from "../types/variant.js";
 
@@ -18,7 +17,7 @@ export async function getAvailableVariants(
   modelID: string,
 ): Promise<VariantInfo[]> {
   try {
-    const { data, error } = await opencodeClient.config.providers();
+    const { data, error } = await readProvidersWhenListed(providerID);
 
     if (error || !data) {
       logger.warn("[VariantManager] Failed to fetch providers:", error);

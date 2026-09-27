@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Bot, Context } from "grammy";
 import type { FilePartInput } from "@opencode-ai/sdk/v2";
 import {
+  admitPromptToInbox,
   consumePromptResponseMode,
   processUserPrompt as processIncomingPrompt,
   type ProcessPromptDeps,
@@ -12,6 +13,7 @@ import { t } from "../../../src/i18n/index.js";
 import { logger } from "../../../src/utils/logger.js";
 import type { AppContainer } from "../../../src/app/bootstrap/app-container.js";
 import { createTestAppContainer } from "../../helpers/app-container.js";
+import { defined } from "../../helpers/defined.js";
 
 const mocked = vi.hoisted(() => ({
   resolvePendingAttachmentMock: vi.fn(),
@@ -587,6 +589,80 @@ describe("bot/handlers/prompt", () => {
     expect(handled).toBe(false);
     expect(ctx.reply).toHaveBeenLastCalledWith(t("bot.photo_download_error"));
     expect(mocked.safeBackgroundTaskMock).not.toHaveBeenCalled();
+  });
+
+  it("reads a photo's capabilities before checking whether the session is busy", async () => {
+    const getModelCapabilities = vi.fn().mockResolvedValue({ input: { image: true } });
+    const deps: ProcessPromptDeps = {
+      ...createDeps(),
+      downloadFile: vi.fn().mockResolvedValue({
+        buffer: Buffer.from("photo"),
+        filePath: "photos/photo.jpg",
+      }),
+      getModelCapabilities,
+    };
+
+    await processIncomingPrompt(
+      createContext(),
+      createIncomingPrompt("Describe this", {
+        photos: [{ fileId: "photo", filename: "photo.jpg", source: "rich" }],
+      }),
+      deps,
+    );
+
+    const firstCapabilitiesRead = defined(getModelCapabilities.mock.invocationCallOrder[0]);
+    const firstBusyCheck = defined(mocked.sessionStatusMock.mock.invocationCallOrder[0]);
+    expect(firstCapabilitiesRead).toBeLessThan(firstBusyCheck);
+  });
+
+  it("answers busy for a photo whose session started a run while its model was being read", async () => {
+    const ctx = createContext();
+    const downloadFile = vi.fn();
+    const deps: ProcessPromptDeps = {
+      ...createDeps(),
+      downloadFile,
+      getModelCapabilities: vi.fn().mockImplementation(async () => {
+        mocked.sessionStatusMock.mockResolvedValue({
+          data: { "session-1": { type: "busy" } },
+          error: null,
+        });
+        return { input: { image: true } };
+      }),
+    };
+
+    const handled = await processIncomingPrompt(
+      ctx,
+      createIncomingPrompt("Describe this", {
+        photos: [{ fileId: "photo", filename: "photo.jpg", source: "rich" }],
+      }),
+      deps,
+    );
+
+    expect(handled).toBe(false);
+    expect(ctx.reply).toHaveBeenCalledWith(t("bot.session_busy"));
+    expect(downloadFile).not.toHaveBeenCalled();
+  });
+
+  it("gates a photo sent into a running session's inbox by the model's capabilities", async () => {
+    const ctx = createContext();
+    const deps: ProcessPromptDeps = {
+      ...createDeps(),
+      downloadFile: vi.fn(),
+      getModelCapabilities: vi.fn().mockResolvedValue({ input: { image: false } }),
+    };
+
+    const admitted = await admitPromptToInbox(
+      ctx,
+      createIncomingPrompt("Describe this", {
+        photos: [{ fileId: "photo", filename: "photo.jpg", source: "rich" }],
+      }),
+      deps,
+      "steer",
+    );
+
+    expect(admitted).toBeNull();
+    expect(ctx.reply).toHaveBeenCalledWith(t("bot.photo_model_no_image"));
+    expect(deps.getModelCapabilities).toHaveBeenCalledTimes(1);
   });
 
   describe("pending /ls attachment", () => {

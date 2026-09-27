@@ -13,9 +13,11 @@ import {
 import {
   DEFAULT_CONTEXT_LIMIT,
   getModelContextLimit,
+  waitForModelContextLimit,
 } from "../../app/services/model-context-limit-service.js";
 import { getStoredModel } from "../../app/services/model-selection-service.js";
 import { isExpectedOpencodeUnavailableError } from "../../utils/opencode-error.js";
+import { safeBackgroundTask } from "../../utils/safe-background-task.js";
 import type { FileChange, PinnedMessageState, TokensInfo } from "./pinned-message-types.js";
 import { t } from "../../i18n/index.js";
 import {
@@ -114,6 +116,7 @@ export class PinnedMessageManager {
       await this.unpinOldMessage();
       await this.createPinnedMessage();
     }
+    this.fillContextLimitWhenListed();
 
     await this.loadDiffsFromApi(sessionId);
   }
@@ -147,6 +150,7 @@ export class PinnedMessageManager {
     if (getPinnedDashboardEnabled()) {
       await this.updatePinnedMessage(true);
     }
+    this.fillContextLimitWhenListed();
     await this.loadDiffsFromApi(sessionId);
   }
 
@@ -719,6 +723,42 @@ export class PinnedMessageManager {
       this.contextLimit = DEFAULT_CONTEXT_LIMIT;
       this.state.tokensLimit = this.contextLimit;
     }
+  }
+
+  /**
+   * The limit just drawn is the default while the server has not listed the model's provider
+   * yet (a location waking after idle): fill in the model's own limit once it is listed.
+   */
+  private fillContextLimitWhenListed(): void {
+    const sessionId = this.state.sessionId;
+    const model = getStoredModel();
+    if (!model.providerID || !model.modelID) {
+      return;
+    }
+
+    safeBackgroundTask({
+      taskName: "pinned.fillContextLimit",
+      task: () => waitForModelContextLimit(model.providerID, model.modelID),
+      onSuccess: async (limit) => {
+        const currentModel = getStoredModel();
+        if (
+          limit === null ||
+          limit === this.contextLimit ||
+          this.state.sessionId !== sessionId ||
+          currentModel.providerID !== model.providerID ||
+          currentModel.modelID !== model.modelID
+        ) {
+          return;
+        }
+
+        logger.info(
+          `[PinnedManager] Context limit filled in after the model was listed: ${model.providerID}/${model.modelID}, limit=${limit}`,
+        );
+        this.contextLimit = limit;
+        this.state.tokensLimit = limit;
+        await this.updatePinnedMessage(true);
+      },
+    });
   }
 
   /**

@@ -2,20 +2,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocked = vi.hoisted(() => ({
   getStoredModelMock: vi.fn(),
+  readProvidersWhenListedMock: vi.fn(),
   getCurrentModelMock: vi.fn(),
   setCurrentModelMock: vi.fn(),
   loggerWarnMock: vi.fn(),
   loggerInfoMock: vi.fn(),
 }));
 
-vi.mock("../../../src/opencode/client.js", () => ({
-  opencodeClient: {
-    config: { providers: vi.fn() },
-  },
-}));
-
 vi.mock("../../../src/app/services/model-selection-service.js", () => ({
   getStoredModel: mocked.getStoredModelMock,
+  readProvidersWhenListed: mocked.readProvidersWhenListedMock,
 }));
 
 vi.mock("../../../src/app/stores/settings-store.js", () => ({
@@ -32,7 +28,50 @@ vi.mock("../../../src/utils/logger.js", () => ({
   },
 }));
 
-import { setCurrentVariant } from "../../../src/app/services/variant-selection-service.js";
+import {
+  getAvailableVariants,
+  setCurrentVariant,
+} from "../../../src/app/services/variant-selection-service.js";
+
+describe("getAvailableVariants", () => {
+  beforeEach(() => {
+    mocked.readProvidersWhenListedMock.mockReset();
+  });
+
+  it("reads the variants once the model's provider is listed", async () => {
+    mocked.readProvidersWhenListedMock.mockResolvedValue({
+      data: {
+        providers: [
+          {
+            id: "commandcode",
+            models: { "deepseek-v4": { variants: { high: {}, low: { disabled: true } } } },
+          },
+        ],
+      },
+      error: null,
+    });
+
+    const variants = await getAvailableVariants("commandcode", "deepseek-v4");
+
+    expect(mocked.readProvidersWhenListedMock).toHaveBeenCalledWith("commandcode");
+    expect(variants).toEqual([
+      { id: "default" },
+      { id: "high", disabled: undefined },
+      { id: "low", disabled: true },
+    ]);
+  });
+
+  it("offers only the default variant when the provider is still not listed", async () => {
+    mocked.readProvidersWhenListedMock.mockResolvedValue({
+      data: { providers: [] },
+      error: null,
+    });
+
+    await expect(getAvailableVariants("commandcode", "deepseek-v4")).resolves.toEqual([
+      { id: "default" },
+    ]);
+  });
+});
 
 describe("setCurrentVariant", () => {
   beforeEach(() => {

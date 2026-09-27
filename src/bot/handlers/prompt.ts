@@ -274,6 +274,16 @@ export async function processUserPrompt(
     });
   }
 
+  if (input.photos.length > 0) {
+    // Reading capabilities can wait for the model's provider to be listed; finish that before
+    // the busy check, so a message sent meanwhile cannot start a run this photo then lands in.
+    const photoModel = (deps.getStoredModel ?? getStoredModel)();
+    await (deps.getModelCapabilities ?? getModelCapabilities)(
+      photoModel.providerID,
+      photoModel.modelID,
+    );
+  }
+
   const sessionIsBusy = await isSessionBusy(currentSession.id, currentSession.directory);
   if (sessionIsBusy) {
     logger.info(`[Bot] Ignoring new prompt: session ${currentSession.id} is busy`);

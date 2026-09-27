@@ -1,12 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { providersMock, getMissingExpectedProvidersMock } = vi.hoisted(() => ({
-  providersMock: vi.fn(),
-  getMissingExpectedProvidersMock: vi.fn(),
-}));
+const { providersMock, getMissingExpectedProvidersMock, readProvidersWhenListedMock } = vi.hoisted(
+  () => ({
+    providersMock: vi.fn(),
+    getMissingExpectedProvidersMock: vi.fn(),
+    readProvidersWhenListedMock: vi.fn(),
+  }),
+);
 
 vi.mock("../../../src/app/services/model-selection-service.js", () => ({
   getMissingExpectedProviders: getMissingExpectedProvidersMock,
+  readProvidersWhenListed: readProvidersWhenListedMock,
 }));
 
 vi.mock("../../../src/opencode/client.js", () => ({
@@ -30,6 +34,7 @@ import {
   __resetModelContextLimitCacheForTests,
   DEFAULT_CONTEXT_LIMIT,
   getModelContextLimit,
+  waitForModelContextLimit,
 } from "../../../src/app/services/model-context-limit-service.js";
 
 function createProvidersResponse(limitsByModel: Record<string, number>) {
@@ -57,6 +62,10 @@ describe("app/services/model-context-limit-service", () => {
     providersMock.mockResolvedValue(createProvidersResponse({ "openai/gpt-4o": 128000 }));
     getMissingExpectedProvidersMock.mockReset();
     getMissingExpectedProvidersMock.mockResolvedValue([]);
+    readProvidersWhenListedMock.mockReset();
+    readProvidersWhenListedMock.mockResolvedValue(
+      createProvidersResponse({ "openai/gpt-4o": 128000, "commandcode/deepseek-v4": 64000 }),
+    );
   });
 
   afterEach(() => {
@@ -118,5 +127,37 @@ describe("app/services/model-context-limit-service", () => {
     await expect(getModelContextLimit("openai", "gpt-4o")).resolves.toBe(128000);
 
     expect(providersMock).toHaveBeenCalledTimes(1);
+  });
+
+  describe("waitForModelContextLimit", () => {
+    it("returns a known limit without reading the list", async () => {
+      await getModelContextLimit("openai", "gpt-4o");
+
+      await expect(waitForModelContextLimit("openai", "gpt-4o")).resolves.toBe(128000);
+      expect(readProvidersWhenListedMock).not.toHaveBeenCalled();
+    });
+
+    it("waits for the model's provider, then keeps its limit for the plain read", async () => {
+      await expect(getModelContextLimit("commandcode", "deepseek-v4")).resolves.toBe(
+        DEFAULT_CONTEXT_LIMIT,
+      );
+
+      await expect(waitForModelContextLimit("commandcode", "deepseek-v4")).resolves.toBe(64000);
+      expect(readProvidersWhenListedMock).toHaveBeenCalledWith("commandcode");
+      await expect(getModelContextLimit("commandcode", "deepseek-v4")).resolves.toBe(64000);
+    });
+
+    it("returns nothing when the model is still not listed after the wait", async () => {
+      await expect(waitForModelContextLimit("anthropic", "claude")).resolves.toBeNull();
+    });
+
+    it("returns nothing when the list cannot be read", async () => {
+      readProvidersWhenListedMock.mockResolvedValueOnce({
+        data: null,
+        error: new TypeError("fetch failed"),
+      });
+
+      await expect(waitForModelContextLimit("commandcode", "deepseek-v4")).resolves.toBeNull();
+    });
   });
 });
