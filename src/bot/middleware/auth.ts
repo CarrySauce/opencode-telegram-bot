@@ -12,6 +12,9 @@ export async function authMiddleware(ctx: Context, next: NextFunction): Promise<
   if (userId && userId === config.telegram.allowedUserId) {
     logger.debug(`[Auth] Access granted for userId=${userId}`);
     await next();
+  } else if (userId && userId === ctx.me.id) {
+    // Updates authored by the bot itself (e.g. the service message about its own pin)
+    logger.debug(`[Auth] Ignoring update from the bot itself: userId=${userId}`);
   } else {
     // Silently ignore unauthorized users
     logger.warn(`Unauthorized access attempt from user ID: ${userId}`);
