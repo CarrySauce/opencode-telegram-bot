@@ -1,6 +1,7 @@
 import { opencodeClient } from "../../opencode/client.js";
 import { logger } from "../../utils/logger.js";
 import { isExpectedOpencodeUnavailableError } from "../../utils/opencode-error.js";
+import { getMissingExpectedProviders } from "./model-selection-service.js";
 
 export const DEFAULT_CONTEXT_LIMIT = 200000;
 
@@ -51,6 +52,17 @@ async function refreshContextLimitCache(): Promise<void> {
             contextLimitCache.set(getModelKey(provider.id, modelID), model.limit.context);
           }
         }
+      }
+
+      const missingProviders = await getMissingExpectedProviders(
+        data.providers.map((provider) => provider.id),
+      );
+      if (missingProviders.length > 0) {
+        // The server may still be registering these providers; read their models again next time.
+        logger.debug(
+          `[ModelContextLimit] Providers list lacks expected providers, not caching it: missing=${missingProviders.join(",")}`,
+        );
+        return;
       }
 
       providersCacheExpiresAt = Date.now() + PROVIDER_CACHE_TTL_MS;

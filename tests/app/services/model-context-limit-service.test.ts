@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { providersMock } = vi.hoisted(() => ({
+const { providersMock, getMissingExpectedProvidersMock } = vi.hoisted(() => ({
   providersMock: vi.fn(),
+  getMissingExpectedProvidersMock: vi.fn(),
+}));
+
+vi.mock("../../../src/app/services/model-selection-service.js", () => ({
+  getMissingExpectedProviders: getMissingExpectedProvidersMock,
 }));
 
 vi.mock("../../../src/opencode/client.js", () => ({
@@ -50,6 +55,8 @@ describe("app/services/model-context-limit-service", () => {
     __resetModelContextLimitCacheForTests();
     providersMock.mockReset();
     providersMock.mockResolvedValue(createProvidersResponse({ "openai/gpt-4o": 128000 }));
+    getMissingExpectedProvidersMock.mockReset();
+    getMissingExpectedProvidersMock.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -86,5 +93,30 @@ describe("app/services/model-context-limit-service", () => {
 
   it("returns the default limit for a model the list does not name", async () => {
     await expect(getModelContextLimit("anthropic", "claude")).resolves.toBe(DEFAULT_CONTEXT_LIMIT);
+  });
+
+  it("reads a list lacking expected providers again on the next call", async () => {
+    getMissingExpectedProvidersMock.mockResolvedValueOnce(["commandcode"]);
+    providersMock.mockResolvedValueOnce(createProvidersResponse({ "openai/gpt-4o": 128000 }));
+    providersMock.mockResolvedValue(
+      createProvidersResponse({ "openai/gpt-4o": 128000, "commandcode/deepseek-v4": 64000 }),
+    );
+
+    await expect(getModelContextLimit("commandcode", "deepseek-v4")).resolves.toBe(
+      DEFAULT_CONTEXT_LIMIT,
+    );
+    await expect(getModelContextLimit("commandcode", "deepseek-v4")).resolves.toBe(64000);
+
+    expect(providersMock).toHaveBeenCalledTimes(2);
+    expect(getMissingExpectedProvidersMock).toHaveBeenCalledWith(["openai"]);
+  });
+
+  it("keeps the limits of listed models from a list lacking expected providers", async () => {
+    getMissingExpectedProvidersMock.mockResolvedValueOnce(["commandcode"]);
+
+    await expect(getModelContextLimit("openai", "gpt-4o")).resolves.toBe(128000);
+    await expect(getModelContextLimit("openai", "gpt-4o")).resolves.toBe(128000);
+
+    expect(providersMock).toHaveBeenCalledTimes(1);
   });
 });

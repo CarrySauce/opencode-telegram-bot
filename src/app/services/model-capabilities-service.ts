@@ -1,5 +1,6 @@
 import { opencodeClient } from "../../opencode/client.js";
 import { logger } from "../../utils/logger.js";
+import { getMissingExpectedProviders } from "./model-selection-service.js";
 import type { Model } from "@opencode-ai/sdk/v2";
 
 interface ModelCapabilitiesCache {
@@ -7,6 +8,20 @@ interface ModelCapabilitiesCache {
 }
 
 const capabilitiesCache: ModelCapabilitiesCache = {};
+
+async function rememberUnlistedModel(cacheKey: string, providerIds: string[]): Promise<void> {
+  const missingProviders = await getMissingExpectedProviders(providerIds);
+
+  if (missingProviders.length > 0) {
+    // The server may still be registering these providers; do not remember that as an answer.
+    logger.debug(
+      `[ModelCapabilities] Providers list lacks expected providers; not caching ${cacheKey}: missing=${missingProviders.join(",")}`,
+    );
+    return;
+  }
+
+  capabilitiesCache[cacheKey] = null;
+}
 
 /**
  * Get model capabilities from OpenCode API
@@ -44,7 +59,10 @@ export async function getModelCapabilities(
 
     if (!provider) {
       logger.warn(`[ModelCapabilities] Provider ${providerID} not found`);
-      capabilitiesCache[cacheKey] = null;
+      await rememberUnlistedModel(
+        cacheKey,
+        providers.map((p) => p.id),
+      );
       return null;
     }
 
@@ -52,7 +70,10 @@ export async function getModelCapabilities(
 
     if (!model) {
       logger.warn(`[ModelCapabilities] Model ${cacheKey} not found in provider`);
-      capabilitiesCache[cacheKey] = null;
+      await rememberUnlistedModel(
+        cacheKey,
+        providers.map((p) => p.id),
+      );
       return null;
     }
 

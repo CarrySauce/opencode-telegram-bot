@@ -7,6 +7,7 @@ import {
   OpencodeReadyLifecycle,
   type OpencodeReadyHandler,
 } from "../../opencode/ready-lifecycle.js";
+import { stopModelCatalogWait } from "../../opencode/ready-refresh.js";
 import { logger } from "../../utils/logger.js";
 import { AssistantRunState } from "../managers/assistant-run-state-manager.js";
 import { AttachManager } from "../managers/attach-manager.js";
@@ -64,7 +65,10 @@ export interface AppContainer {
   resetAggregator(): void;
   /** Clears response streams, tool trackers, background tracking and run state. */
   resetRuntimeStreams(reason: string): void;
-  /** Stops ready-restore, event listening and the heartbeat, and clears runtime state. */
+  /**
+   * Stops ready-restore, the model catalog wait, event listening and the heartbeat,
+   * and clears runtime state.
+   */
   cleanupProcess(reason: string): void;
 }
 
@@ -133,6 +137,7 @@ export function createAppContainer(): AppContainer {
 
     cleanupProcess: (reason) => {
       stopReadyRestore();
+      stopModelCatalogWait();
       eventSubscriptionService.cleanup(reason);
       stopHeartbeat();
     },

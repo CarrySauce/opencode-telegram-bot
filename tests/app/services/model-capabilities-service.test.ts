@@ -1,8 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Model } from "@opencode-ai/sdk/v2";
 
-const { providersMock } = vi.hoisted(() => ({
+const { providersMock, getMissingExpectedProvidersMock } = vi.hoisted(() => ({
   providersMock: vi.fn(),
+  getMissingExpectedProvidersMock: vi.fn(),
+}));
+
+vi.mock("../../../src/app/services/model-selection-service.js", () => ({
+  getMissingExpectedProviders: getMissingExpectedProvidersMock,
 }));
 
 vi.mock("../../../src/opencode/client.js", () => ({
@@ -59,6 +64,8 @@ describe("model/capabilities", () => {
       __resetModelCapabilitiesCacheForTests();
       providersMock.mockReset();
       providersMock.mockResolvedValue(createProvidersResponse({ openai: ["gpt-4o"] }));
+      getMissingExpectedProvidersMock.mockReset();
+      getMissingExpectedProvidersMock.mockResolvedValue([]);
     });
 
     it("returns and caches the capabilities of a listed model", async () => {
@@ -96,6 +103,28 @@ describe("model/capabilities", () => {
 
       await expect(getModelCapabilities("openai", "gpt-4o")).resolves.toBeNull();
       await expect(getModelCapabilities("openai", "gpt-4o")).resolves.toEqual(VISION_CAPABILITIES);
+    });
+
+    it("does not remember a provider missing from a list that lacks expected providers", async () => {
+      getMissingExpectedProvidersMock.mockResolvedValueOnce(["commandcode"]);
+      providersMock.mockResolvedValueOnce(createProvidersResponse({ openai: ["gpt-4o"] }));
+      providersMock.mockResolvedValue(
+        createProvidersResponse({ openai: ["gpt-4o"], commandcode: ["deepseek-v4"] }),
+      );
+
+      await expect(getModelCapabilities("commandcode", "deepseek-v4")).resolves.toBeNull();
+      await expect(getModelCapabilities("commandcode", "deepseek-v4")).resolves.toEqual(
+        VISION_CAPABILITIES,
+      );
+
+      expect(getMissingExpectedProvidersMock).toHaveBeenCalledWith(["openai"]);
+    });
+
+    it("remembers a missing provider when the list counts as complete", async () => {
+      await expect(getModelCapabilities("commandcode", "deepseek-v4")).resolves.toBeNull();
+      await expect(getModelCapabilities("commandcode", "deepseek-v4")).resolves.toBeNull();
+
+      expect(providersMock).toHaveBeenCalledTimes(1);
     });
   });
 

@@ -9,6 +9,8 @@ export async function resetSingletonState(): Promise<void> {
     { __resetStreamThrottleForTests },
     { telegramOutageNoticeService },
     { __resetServerHealthStateForTests },
+    modelSelectionModule,
+    readyRefreshModule,
     loggerModule,
   ] = await Promise.all([
     import("../../src/opencode/events.js"),
@@ -20,6 +22,8 @@ export async function resetSingletonState(): Promise<void> {
     import("../../src/bot/streaming/stream-throttle.js"),
     import("../../src/app/services/telegram-outage-notice-service.js"),
     import("../../src/opencode/server-health.js"),
+    import("../../src/app/services/model-selection-service.js"),
+    import("../../src/opencode/ready-refresh.js"),
     import("../../src/utils/logger.js"),
   ]);
 
@@ -32,6 +36,21 @@ export async function resetSingletonState(): Promise<void> {
   telegramOutageNoticeService.__resetForTests();
   __resetSessionDirectoryCacheForTests();
   __resetServerHealthStateForTests();
+
+  // Files that mock these modules may leave the reset out of the mock.
+  if (
+    "__resetModelCatalogCacheForTests" in modelSelectionModule &&
+    typeof modelSelectionModule.__resetModelCatalogCacheForTests === "function"
+  ) {
+    modelSelectionModule.__resetModelCatalogCacheForTests();
+  }
+
+  if (
+    "__resetReadyRefreshForTests" in readyRefreshModule &&
+    typeof readyRefreshModule.__resetReadyRefreshForTests === "function"
+  ) {
+    readyRefreshModule.__resetReadyRefreshForTests();
+  }
 
   if (
     "__resetLoggerForTests" in loggerModule &&

@@ -15,6 +15,7 @@ const mocked = vi.hoisted(() => ({
   scheduledTaskInitializeMock: vi.fn(),
   scheduledTaskShutdownMock: vi.fn(),
   reconcileStoredModelSelectionMock: vi.fn(),
+  startModelCatalogWarmupMock: vi.fn(),
   clearServiceStateFileMock: vi.fn(),
   isServiceChildProcessMock: vi.fn(),
   getServiceStateFilePathFromEnvMock: vi.fn(),
@@ -73,6 +74,7 @@ vi.mock("../../src/app/stores/settings-store.js", () => ({
 
 vi.mock("../../src/app/services/model-selection-service.js", () => ({
   reconcileStoredModelSelection: mocked.reconcileStoredModelSelectionMock,
+  startModelCatalogWarmup: mocked.startModelCatalogWarmupMock,
 }));
 
 vi.mock("../../src/runtime/mode.js", () => ({
@@ -189,6 +191,7 @@ describe("app/start-bot-app", () => {
     mocked.scheduledTaskInitializeMock.mockReset();
     mocked.scheduledTaskShutdownMock.mockReset();
     mocked.reconcileStoredModelSelectionMock.mockReset();
+    mocked.startModelCatalogWarmupMock.mockReset();
     mocked.clearServiceStateFileMock.mockReset();
     mocked.isServiceChildProcessMock.mockReset();
     mocked.getServiceStateFilePathFromEnvMock.mockReset();
@@ -233,6 +236,15 @@ describe("app/start-bot-app", () => {
     expect(mocked.registerOpenCodeReadyRefreshHandlerMock).toHaveBeenCalledTimes(1);
     expect(mocked.registerOpenCodeReadyRefreshHandlerMock).toHaveBeenCalledWith(container);
     expect(mocked.notifyOpencodeReadyIfHealthyMock).toHaveBeenCalledWith("startup", container);
+  });
+
+  it("opens the model catalog warm-up window before the startup stored-model check", async () => {
+    await startBotApp();
+
+    expect(mocked.startModelCatalogWarmupMock).toHaveBeenCalledTimes(1);
+    expect(mocked.startModelCatalogWarmupMock.mock.invocationCallOrder[0]).toBeLessThan(
+      mocked.reconcileStoredModelSelectionMock.mock.invocationCallOrder[0]!,
+    );
   });
 
   it("runs startup health notification even when auto-restart handled startup", async () => {

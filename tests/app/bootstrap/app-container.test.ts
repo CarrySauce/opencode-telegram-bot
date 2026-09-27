@@ -2,11 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocked = vi.hoisted(() => ({
   stopEventListening: vi.fn(),
+  stopModelCatalogWait: vi.fn(),
 }));
 
 vi.mock("../../../src/opencode/events.js", () => ({
   subscribeToEvents: vi.fn(),
   stopEventListening: mocked.stopEventListening,
+}));
+
+vi.mock("../../../src/opencode/ready-refresh.js", () => ({
+  stopModelCatalogWait: mocked.stopModelCatalogWait,
 }));
 
 import { logger } from "../../../src/utils/logger.js";
@@ -18,6 +23,7 @@ describe("app/bootstrap/app-container", () => {
 
   beforeEach(() => {
     mocked.stopEventListening.mockReset();
+    mocked.stopModelCatalogWait.mockReset();
     container = createTestAppContainer();
   });
 
@@ -127,6 +133,12 @@ describe("app/bootstrap/app-container", () => {
     expect(mocked.stopEventListening).toHaveBeenCalledTimes(1);
     expect(aggregatorClear).toHaveBeenCalledTimes(1);
     expect(runClear).toHaveBeenCalledWith("test_shutdown");
+  });
+
+  it("stops the model catalog wait on process cleanup", () => {
+    container.cleanupProcess("test_shutdown");
+
+    expect(mocked.stopModelCatalogWait).toHaveBeenCalledTimes(1);
   });
 
   it("drops the open interaction on the interactions reset", () => {

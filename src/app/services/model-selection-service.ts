@@ -19,16 +19,31 @@ interface OpenCodeModelState {
 interface ModelCatalogReadResult {
   validModelKeys: Set<string> | null;
   isStale: boolean;
+  isComplete: boolean;
+}
+
+export interface StoredModelReconcileResult {
+  /** A fresh, non-empty catalog was read. */
+  catalogAvailable: boolean;
+  /** The catalog lists every expected provider; always true outside the warm-up window. */
+  catalogComplete: boolean;
+  /** The selected model (stored, or the config model) is listed, or there is none to look for. */
+  selectedModelListed: boolean;
+  /** The stored model was replaced by the config model. */
+  storedModelReplaced: boolean;
 }
 
 const MODEL_CATALOG_CACHE_TTL_MS = 10 * 60 * 1000;
+const MODEL_CATALOG_WARMUP_MS = 60 * 1000;
 
 let cachedValidModelKeys: Set<string> | null = null;
 let cachedAllModels: FavoriteModel[] | null = null;
 let cachedProviders: ProviderInfo[] | null = null;
 let cachedModelsByProvider: Map<string, FavoriteModel[]> | null = null;
+let cachedCatalogComplete = false;
 let modelCatalogCacheExpiresAt = 0;
 let modelCatalogFetchInFlight: Promise<ModelCatalogReadResult> | null = null;
+let modelCatalogWarmupEndsAt = 0;
 
 const SEARCH_RESULTS_LIMIT = 10;
 
@@ -90,7 +105,59 @@ function clearModelCatalogCache(): void {
   cachedAllModels = null;
   cachedProviders = null;
   cachedModelsByProvider = null;
+  cachedCatalogComplete = false;
   modelCatalogCacheExpiresAt = 0;
+}
+
+/**
+ * Open the warm-up window after a server start: for its duration a provider list that
+ * lacks a provider the user relies on is not treated as final, because the server may
+ * still be registering plugin providers.
+ */
+export function startModelCatalogWarmup(): void {
+  modelCatalogWarmupEndsAt = Date.now() + MODEL_CATALOG_WARMUP_MS;
+}
+
+export function isModelCatalogWarmupActive(): boolean {
+  return Date.now() < modelCatalogWarmupEndsAt;
+}
+
+async function getExpectedProviderIds(): Promise<Set<string>> {
+  const providerIds = new Set<string>();
+  const selectedModel = getStoredModel();
+
+  if (selectedModel.providerID) {
+    providerIds.add(selectedModel.providerID);
+  }
+
+  try {
+    const { favorites, recent } = await readOpenCodeModelState();
+    for (const model of [...favorites, ...recent]) {
+      providerIds.add(model.providerID);
+    }
+  } catch {
+    // Without OpenCode model state only the selected model's provider is expected.
+  }
+
+  return providerIds;
+}
+
+/**
+ * Expected providers (of the selected, favorite and recent models) that a provider list
+ * lacks while the warm-up window is open. Outside the window every list counts as complete.
+ * @param providerIds Provider IDs of the list that was read
+ * @returns Missing provider IDs, empty when the list counts as complete
+ */
+export async function getMissingExpectedProviders(
+  providerIds: Iterable<string>,
+): Promise<string[]> {
+  if (!isModelCatalogWarmupActive()) {
+    return [];
+  }
+
+  const listedProviderIds = new Set(providerIds);
+  const expectedProviderIds = await getExpectedProviderIds();
+  return Array.from(expectedProviderIds).filter((providerId) => !listedProviderIds.has(providerId));
 }
 
 async function readModelCatalog(options?: {
@@ -100,7 +167,7 @@ async function readModelCatalog(options?: {
     logger.debug(
       `[ModelManager] Model catalog cache hit: models=${cachedValidModelKeys.size}, ttlMs=${modelCatalogCacheExpiresAt - Date.now()}`,
     );
-    return { validModelKeys: cachedValidModelKeys, isStale: false };
+    return { validModelKeys: cachedValidModelKeys, isStale: false, isComplete: true };
   }
 
   if (modelCatalogFetchInFlight) {
@@ -118,10 +185,14 @@ async function readModelCatalog(options?: {
 
         if (cachedValidModelKeys) {
           logger.warn("[ModelManager] Using stale model catalog cache after refresh failure");
-          return { validModelKeys: cachedValidModelKeys, isStale: true };
+          return {
+            validModelKeys: cachedValidModelKeys,
+            isStale: true,
+            isComplete: cachedCatalogComplete,
+          };
         }
 
-        return { validModelKeys: null, isStale: false };
+        return { validModelKeys: null, isStale: false, isComplete: false };
       }
 
       const validModelKeys = new Set<string>();
@@ -153,31 +224,48 @@ async function readModelCatalog(options?: {
           `[ModelManager] Model catalog is empty, treating it as unavailable: providers=${response.data.providers.length}`,
         );
         clearModelCatalogCache();
-        return { validModelKeys: null, isStale: false };
+        return { validModelKeys: null, isStale: false, isComplete: false };
       }
 
       providers.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+
+      const missingProviders = await getMissingExpectedProviders(
+        response.data.providers.map((provider) => provider.id),
+      );
+      const isComplete = missingProviders.length === 0;
 
       cachedValidModelKeys = validModelKeys;
       cachedAllModels = allModels;
       cachedProviders = providers;
       cachedModelsByProvider = modelsByProvider;
-      modelCatalogCacheExpiresAt = Date.now() + MODEL_CATALOG_CACHE_TTL_MS;
+      cachedCatalogComplete = isComplete;
+      // A list still missing expected providers is used for this read but asked again next time.
+      modelCatalogCacheExpiresAt = isComplete ? Date.now() + MODEL_CATALOG_CACHE_TTL_MS : 0;
 
-      logger.debug(
-        `[ModelManager] Model catalog refreshed: providers=${response.data.providers.length}, models=${validModelKeys.size}`,
-      );
+      if (isComplete) {
+        logger.debug(
+          `[ModelManager] Model catalog refreshed: providers=${response.data.providers.length}, models=${validModelKeys.size}`,
+        );
+      } else {
+        logger.debug(
+          `[ModelManager] Model catalog lacks expected providers, not caching it: providers=${response.data.providers.length}, models=${validModelKeys.size}, missing=${missingProviders.join(",")}`,
+        );
+      }
 
-      return { validModelKeys: cachedValidModelKeys, isStale: false };
+      return { validModelKeys: cachedValidModelKeys, isStale: false, isComplete };
     } catch (err) {
       logModelCatalogRefreshFailure(err, "exception");
 
       if (cachedValidModelKeys) {
         logger.warn("[ModelManager] Using stale model catalog cache after refresh exception");
-        return { validModelKeys: cachedValidModelKeys, isStale: true };
+        return {
+          validModelKeys: cachedValidModelKeys,
+          isStale: true,
+          isComplete: cachedCatalogComplete,
+        };
       }
 
-      return { validModelKeys: null, isStale: false };
+      return { validModelKeys: null, isStale: false, isComplete: false };
     } finally {
       modelCatalogFetchInFlight = null;
     }
@@ -240,6 +328,28 @@ function getOpenCodeModelStatePath(): string {
 }
 
 /**
+ * Read favorite and recent models from OpenCode local state file.
+ * Throws when the file is missing or unreadable.
+ */
+async function readOpenCodeModelState(): Promise<{
+  stateFilePath: string;
+  favorites: FavoriteModel[];
+  recent: FavoriteModel[];
+}> {
+  const fs = await import("fs/promises");
+
+  const stateFilePath = getOpenCodeModelStatePath();
+  const content = await fs.readFile(stateFilePath, "utf-8");
+  const state = JSON.parse(content) as OpenCodeModelState;
+
+  return {
+    stateFilePath,
+    favorites: normalizeFavoriteModels(state),
+    recent: normalizeRecentModels(state),
+  };
+}
+
+/**
  * Get favorite and recent models from OpenCode local state file.
  * Config model is always treated as favorite.
  */
@@ -247,14 +357,11 @@ export async function getModelSelectionLists(): Promise<ModelSelectionLists> {
   const envDefaultModel = getEnvDefaultModel();
 
   try {
-    const fs = await import("fs/promises");
-
-    const stateFilePath = getOpenCodeModelStatePath();
-    const content = await fs.readFile(stateFilePath, "utf-8");
-    const state = JSON.parse(content) as OpenCodeModelState;
-
-    const rawFavorites = normalizeFavoriteModels(state);
-    const rawRecent = normalizeRecentModels(state);
+    const {
+      stateFilePath,
+      favorites: rawFavorites,
+      recent: rawRecent,
+    } = await readOpenCodeModelState();
     const shouldValidateWithCatalog = rawFavorites.length > 0 || rawRecent.length > 0;
     const validModelKeys = shouldValidateWithCatalog ? await getValidModelKeys() : null;
 
@@ -318,31 +425,49 @@ export async function getModelSelectionLists(): Promise<ModelSelectionLists> {
 
 /**
  * Validate stored selected model against OpenCode providers catalog.
- * If selected model is unavailable, fallback to env default model.
- * @returns true if a current, non-empty model catalog was read
+ * If selected model is unavailable, fallback to env default model — but not while
+ * the catalog still lacks expected providers.
  */
 export async function reconcileStoredModelSelection(options?: {
   forceCatalogRefresh?: boolean;
-}): Promise<boolean> {
-  const { validModelKeys, isStale } = await readModelCatalog({
+}): Promise<StoredModelReconcileResult> {
+  const { validModelKeys, isStale, isComplete } = await readModelCatalog({
     force: options?.forceCatalogRefresh,
   });
-  const catalogAvailable = validModelKeys !== null && !isStale;
+  const result: StoredModelReconcileResult = {
+    catalogAvailable: validModelKeys !== null && !isStale,
+    catalogComplete: isComplete,
+    selectedModelListed: false,
+    storedModelReplaced: false,
+  };
   const currentModel = getCurrentModel();
 
   if (!currentModel?.providerID || !currentModel.modelID) {
-    return catalogAvailable;
+    const envDefaultModel = getEnvDefaultModel();
+    result.selectedModelListed =
+      !envDefaultModel ||
+      (validModelKeys?.has(getModelKey(envDefaultModel.providerID, envDefaultModel.modelID)) ??
+        false);
+    return result;
   }
 
   if (!validModelKeys) {
     logger.warn("[ModelManager] Skipping stored model validation: model catalog unavailable");
-    return catalogAvailable;
+    return result;
   }
 
   const currentModelKey = getModelKey(currentModel.providerID, currentModel.modelID);
 
   if (validModelKeys.has(currentModelKey)) {
-    return catalogAvailable;
+    result.selectedModelListed = true;
+    return result;
+  }
+
+  if (!isComplete) {
+    logger.info(
+      `[ModelManager] Stored model ${currentModelKey} is not listed yet; keeping it while the server registers providers`,
+    );
+    return result;
   }
 
   const envDefaultModel = getEnvDefaultModel();
@@ -350,7 +475,7 @@ export async function reconcileStoredModelSelection(options?: {
     logger.warn(
       `[ModelManager] Stored model ${currentModelKey} is unavailable and env default model is missing`,
     );
-    return catalogAvailable;
+    return result;
   }
 
   const fallbackKey = getModelKey(envDefaultModel.providerID, envDefaultModel.modelID);
@@ -364,12 +489,15 @@ export async function reconcileStoredModelSelection(options?: {
     variant: "default",
   });
 
-  return catalogAvailable;
+  result.storedModelReplaced = true;
+  result.selectedModelListed = validModelKeys.has(fallbackKey);
+  return result;
 }
 
 export function __resetModelCatalogCacheForTests(): void {
   clearModelCatalogCache();
   modelCatalogFetchInFlight = null;
+  modelCatalogWarmupEndsAt = 0;
 }
 
 /**
