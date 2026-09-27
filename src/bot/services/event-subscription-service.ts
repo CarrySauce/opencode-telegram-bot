@@ -143,6 +143,8 @@ class EventSubscriptionService implements BotEventSubscriptionService {
     // The new stream no longer knows the background operations the old one announced,
     // so their end would never arrive.
     this.stopBackgroundOperations("event_stream_reconnect");
+    // An idle missed in the gap must not time a later turn from this one.
+    this.deps.summaryAggregator.forgetLiveTurn();
 
     const bot = this.botInstance;
     const chatId = this.chatIdInstance;

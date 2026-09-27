@@ -1898,7 +1898,88 @@ describe("summary/aggregator", () => {
 
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    expect(onSessionIdle).toHaveBeenCalledWith("session-1");
+    expect(onSessionIdle).toHaveBeenCalledWith("session-1", { interrupted: false });
+  });
+
+  it("passes the interrupted mark of an idle to the callback", async () => {
+    const onSessionIdle = vi.fn();
+    summaryAggregator.setOnSessionIdle(onSessionIdle);
+    summaryAggregator.setSession("session-1");
+
+    summaryAggregator.processEvent({
+      type: "session.idle",
+      properties: { sessionID: "session-1", interrupted: true },
+    } as unknown as Event);
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(onSessionIdle).toHaveBeenCalledWith("session-1", { interrupted: true });
+  });
+
+  describe("live turn start", () => {
+    function emitStatus(sessionID: string, type: "busy" | "idle"): void {
+      summaryAggregator.processEvent({
+        type: "session.status",
+        properties: { sessionID, status: { type } },
+      } as unknown as Event);
+    }
+
+    function emitIdle(sessionID: string): void {
+      summaryAggregator.processEvent({
+        type: "session.idle",
+        properties: { sessionID },
+      } as unknown as Event);
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("keeps the first busy of a turn until the session goes idle", () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(1_000);
+      summaryAggregator.setSession("session-1");
+
+      emitStatus("session-1", "busy");
+      vi.setSystemTime(5_000);
+      emitStatus("session-1", "busy");
+
+      expect(summaryAggregator.getLiveTurnStartedAt("session-1")).toBe(1_000);
+      expect(summaryAggregator.getLiveTurnStartedAt("session-2")).toBeNull();
+
+      emitIdle("session-1");
+      expect(summaryAggregator.getLiveTurnStartedAt("session-1")).toBeNull();
+
+      emitStatus("session-1", "busy");
+      expect(summaryAggregator.getLiveTurnStartedAt("session-1")).toBe(5_000);
+    });
+
+    it("forgets the turn on a session error, a reconnect and a session change", () => {
+      summaryAggregator.setSession("session-1");
+
+      emitStatus("session-1", "busy");
+      summaryAggregator.processEvent({
+        type: "session.error",
+        properties: { sessionID: "session-1", error: { message: "boom" } },
+      } as unknown as Event);
+      expect(summaryAggregator.getLiveTurnStartedAt("session-1")).toBeNull();
+
+      emitStatus("session-1", "busy");
+      summaryAggregator.forgetLiveTurn();
+      expect(summaryAggregator.getLiveTurnStartedAt("session-1")).toBeNull();
+
+      emitStatus("session-1", "busy");
+      summaryAggregator.setSession("session-2");
+      expect(summaryAggregator.getLiveTurnStartedAt("session-2")).toBeNull();
+    });
+
+    it("ignores a busy of another session", () => {
+      summaryAggregator.setSession("session-1");
+
+      emitStatus("session-2", "busy");
+
+      expect(summaryAggregator.getLiveTurnStartedAt("session-1")).toBeNull();
+    });
   });
 
   it("passes assistant metadata to onComplete", () => {

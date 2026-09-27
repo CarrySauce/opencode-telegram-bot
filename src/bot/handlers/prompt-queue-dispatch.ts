@@ -161,7 +161,7 @@ async function sendPromptToInbox(
     if (!promptQueue.releaseReservation(reservationId)) {
       return;
     }
-    if (!deps.assistantRunState.hasRun(admitted.sessionId)) {
+    if (!deps.assistantRunState.hasBotRun(admitted.sessionId)) {
       const session = getCurrentSession();
       if (session?.id === admitted.sessionId) {
         await startInboxPromptRun(session, deps, input.responseMode);

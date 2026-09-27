@@ -64,6 +64,7 @@ No public inbound ports are required for normal usage.
 ### Result delivery
 
 - Send each completed assistant response after completion signal from SSE
+- When the assistant footer is on, every answered turn of the followed session ends with its own footer — including a turn OpenCode starts by itself after a background command or subagent ends (V2) and a prompt typed in an attached OpenCode TUI or Desktop — with that turn's agent and model and the time from its own start; a turn that is aborted, errors, or is stopped from an attached client gets none
 - In draft streaming mode, assistant text written before a question or permission prompt is sent as a message above that prompt when it appears, and is not sent again when the reply completes
 - If that send fails, the reply is not sent again; when Telegram accepts sends again, the chat gets a notice that the last assistant reply was not delivered
 - After a mid-session Telegram outage, the next new message is answered without restarting the app

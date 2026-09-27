@@ -17,6 +17,11 @@ export interface V1GlobalEvent {
 
 type ToolInput = Record<string, unknown>;
 
+/** A V1 idle, plus the mark of an execution that was interrupted rather than finished. */
+type IdleEventProperties = Extract<Event, { type: "session.idle" }>["properties"] & {
+  interrupted?: true;
+};
+
 interface AssistantMessageState {
   sessionID: string;
   created: number;
@@ -180,14 +185,20 @@ export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) 
     return call;
   };
 
-  const idleEvents = (sessionID: string, id: string): Event[] => [
-    {
-      id: `${id}:status`,
-      type: "session.status",
-      properties: { sessionID, status: { type: "idle" } },
-    },
-    { id: `${id}:idle`, type: "session.idle", properties: { sessionID } },
-  ];
+  const idleEvents = (sessionID: string, id: string, interrupted = false): Event[] => {
+    // V1 has no way to say a turn was stopped: the idle of an interrupted execution carries it.
+    const idleProperties: IdleEventProperties = interrupted
+      ? { sessionID, interrupted: true }
+      : { sessionID };
+    return [
+      {
+        id: `${id}:status`,
+        type: "session.status",
+        properties: { sessionID, status: { type: "idle" } },
+      },
+      { id: `${id}:idle`, type: "session.idle", properties: idleProperties },
+    ];
+  };
 
   const backgroundKey = (metadata: Record<string, unknown>): string | null => {
     if (typeof metadata.shellID === "string") {
@@ -306,7 +317,11 @@ export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) 
       case "session.execution.succeeded":
       case "session.execution.interrupted":
         return [
-          ...idleEvents(event.data.sessionID, event.id),
+          ...idleEvents(
+            event.data.sessionID,
+            event.id,
+            event.type === "session.execution.interrupted",
+          ),
           ...endBackgroundCall(`session:${event.data.sessionID}`, created, { metadata: {} }),
         ];
 

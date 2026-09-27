@@ -27,7 +27,7 @@ type SessionLifecycleDeps = EventHandlerDeps<
 export function registerSessionLifecycleHandlers(deps: SessionLifecycleDeps): void {
   const { runtime, policy, summaryAggregator } = deps;
 
-  summaryAggregator.setOnSessionIdle(async (sessionId) => {
+  summaryAggregator.setOnSessionIdle(async (sessionId, { interrupted }) => {
     resetStreamThrottle(sessionId);
     await markAttachedSessionIdle(sessionId, deps);
     // Dropped immediately when this session is no longer current: the early
@@ -45,6 +45,15 @@ export function registerSessionLifecycleHandlers(deps: SessionLifecycleDeps): vo
       runtime.compactProgressStreamer.clearSession(sessionId, "session_idle");
     }
     await runtime.getCompletionTask(sessionId)?.catch(() => undefined);
+
+    // A turn the bot did not start that was stopped from a client ends like an aborted one.
+    if (
+      interrupted &&
+      deps.assistantRunState.hasRun(sessionId) &&
+      !deps.assistantRunState.hasBotRun(sessionId)
+    ) {
+      deps.assistantRunState.clearRun(sessionId, "session_interrupted");
+    }
 
     const completedRun = deps.assistantRunState.isResponseCompleted(sessionId)
       ? deps.assistantRunState.finishRun(sessionId, "session_idle")

@@ -16,6 +16,8 @@ export interface AssistantRunResolvedInfo {
 
 export interface AssistantRunInfo extends AssistantRunStartInfo {
   sessionId: string;
+  /** False for a turn the bot only observed: OpenCode's own follow-up or a prompt typed in a client. */
+  startedByBot: boolean;
   actualAgent?: string | undefined;
   actualProviderID?: string | undefined;
   actualModelID?: string | undefined;
@@ -33,6 +35,7 @@ export class AssistantRunState {
     resetStreamThrottle(sessionId);
     this.runs.set(sessionId, {
       sessionId,
+      startedByBot: true,
       startedAt: info.startedAt,
       configuredAgent: info.configuredAgent,
       configuredProviderID: info.configuredProviderID,
@@ -43,6 +46,22 @@ export class AssistantRunState {
     logger.debug(
       `[AssistantRunState] Started run: session=${sessionId}, agent=${info.configuredAgent || "unknown"}, model=${info.configuredProviderID || "unknown"}/${info.configuredModelID || "unknown"}`,
     );
+  }
+
+  /** Opens a run for a turn the bot did not start; its agent and model come with its reply. */
+  startObservedRun(sessionId: string, startedAt: number): void {
+    if (!sessionId || this.runs.has(sessionId)) {
+      return;
+    }
+
+    this.runs.set(sessionId, {
+      sessionId,
+      startedByBot: false,
+      startedAt,
+      hasCompletedResponse: false,
+    });
+
+    logger.debug(`[AssistantRunState] Started observed run: session=${sessionId}`);
   }
 
   markResponseCompleted(sessionId: string, info?: AssistantRunResolvedInfo): void {
@@ -65,6 +84,10 @@ export class AssistantRunState {
 
   hasRun(sessionId: string): boolean {
     return this.runs.has(sessionId);
+  }
+
+  hasBotRun(sessionId: string): boolean {
+    return this.runs.get(sessionId)?.startedByBot === true;
   }
 
   isResponseCompleted(sessionId: string): boolean {

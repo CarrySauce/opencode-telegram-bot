@@ -21,6 +21,30 @@ function payloads(translate: ReturnType<typeof createV2EventTranslator>, events:
 }
 
 describe("opencode/v2/events", () => {
+  it("marks the idle of an interrupted execution and only that one", () => {
+    const translate = createV2EventTranslator();
+
+    const [interrupted, succeeded, failed] = [
+      "session.execution.interrupted",
+      "session.execution.succeeded",
+      "session.execution.failed",
+    ].map((type) =>
+      payloads(translate, [
+        event(
+          type,
+          type === "session.execution.failed"
+            ? { sessionID: SESSION, error: { type: "unknown", message: "boom" } }
+            : { sessionID: SESSION },
+          false,
+        ),
+      ]).find((item) => item.type === "session.idle"),
+    );
+
+    expect(interrupted?.properties).toEqual({ sessionID: SESSION, interrupted: true });
+    expect(succeeded?.properties).toEqual({ sessionID: SESSION });
+    expect(failed?.properties).toEqual({ sessionID: SESSION });
+  });
+
   it("turns a streamed V2 reply into the V1 message and part events", () => {
     const translate = createV2EventTranslator();
 

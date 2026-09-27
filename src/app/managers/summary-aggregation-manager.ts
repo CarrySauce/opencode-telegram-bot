@@ -163,7 +163,12 @@ export interface SessionRetryInfo {
 
 type SessionRetryCallback = (retryInfo: SessionRetryInfo) => void;
 
-type SessionIdleCallback = (sessionId: string) => void;
+export interface SessionIdleInfo {
+  /** OpenCode V2 stopped the execution instead of finishing it. */
+  interrupted: boolean;
+}
+
+type SessionIdleCallback = (sessionId: string, idleInfo: SessionIdleInfo) => void;
 
 type PermissionCallback = (request: PermissionRequest) => void | Promise<void>;
 
@@ -237,6 +242,11 @@ function isUpstreamEmptyResponseText(text: string, isFinal: boolean): boolean {
   }
 
   return isFinal ? trimmed.includes(UPSTREAM_EMPTY_RESPONSE_KEY) : true;
+}
+
+/** The V2 adapter marks the idle of an execution that was interrupted rather than finished. */
+function isInterruptedIdle(properties: object): boolean {
+  return "interrupted" in properties && properties.interrupted === true;
 }
 
 function extractFirstUpdatedFileFromTitle(title: string): string {
@@ -339,6 +349,8 @@ export class SummaryAggregator {
   private acceptsSubagentEvents = false;
   private subagentRunStartedAt = 0;
   private lastSubagentSnapshot = "";
+  // When the current session's running turn began, whoever started it; null between turns.
+  private liveTurnStartedAt: number | null = null;
 
   setBotAndChatId(bot: Bot, chatId: number): void {
     this.bot = bot;
@@ -431,6 +443,16 @@ export class SummaryAggregator {
 
   setOnCleared(callback: ClearedCallback): void {
     this.onClearedCallback = callback;
+  }
+
+  /** Start of the session's running turn, or null when it is not the current one or is idle. */
+  getLiveTurnStartedAt(sessionId: string): number | null {
+    return sessionId === this.currentSessionId ? this.liveTurnStartedAt : null;
+  }
+
+  /** Forgets the running turn: after a gap in the event stream its end may have been missed. */
+  forgetLiveTurn(): void {
+    this.liveTurnStartedAt = null;
   }
 
   holdOutbound(): void {
@@ -632,6 +654,7 @@ export class SummaryAggregator {
     this.acceptsSubagentEvents = false;
     this.subagentRunStartedAt = 0;
     this.lastSubagentSnapshot = "";
+    this.liveTurnStartedAt = null;
     this.permissionQueue = Promise.resolve();
     this.messageCount = 0;
 
@@ -2209,6 +2232,11 @@ export class SummaryAggregator {
       return;
     }
 
+    if (status?.type === "busy") {
+      this.liveTurnStartedAt ??= Date.now();
+      return;
+    }
+
     if (status?.type !== "retry" || !this.onSessionRetryCallback) {
       return;
     }
@@ -2248,6 +2276,7 @@ export class SummaryAggregator {
     }
 
     logger.info(`[Aggregator] Session became idle: ${sessionID}`);
+    this.liveTurnStartedAt = null;
     this.acceptsSubagentEvents = false;
     this.retireForegroundSubagents();
 
@@ -2256,8 +2285,9 @@ export class SummaryAggregator {
 
     if (this.onSessionIdleCallback) {
       const callback = this.onSessionIdleCallback;
+      const idleInfo: SessionIdleInfo = { interrupted: isInterruptedIdle(event.properties) };
       this.scheduleOutbound(() => {
-        callback(sessionID);
+        callback(sessionID, idleInfo);
       }, true);
     }
   }
@@ -2311,6 +2341,7 @@ export class SummaryAggregator {
     }
 
     logger.warn(`[Aggregator] Session error: ${sessionID}: ${message}`);
+    this.liveTurnStartedAt = null;
     this.acceptsSubagentEvents = false;
     this.retireForegroundSubagents();
     this.stopTypingIndicator();

@@ -72,7 +72,7 @@ async function pickUpInboxPrompt(
       await closeForegroundRun(deps, sessionId, destination, completedRun, "inbox_queue_pickup");
     }
 
-    if (!deps.assistantRunState.hasRun(sessionId)) {
+    if (!deps.assistantRunState.hasBotRun(sessionId)) {
       const session = getCurrentSession();
       if (session?.id === sessionId) {
         await startInboxPromptRun(session, deps, item.responseMode);
@@ -319,6 +319,12 @@ export function registerAssistantResponseHandlers(deps: AssistantResponseDeps): 
       }
 
       try {
+        // A turn the bot did not start gets its run from its first reply, timed from the turn's
+        // start; a turn already over (aborted, errored, idle) opens none.
+        const turnStartedAt = summaryAggregator.getLiveTurnStartedAt(sessionId);
+        if (turnStartedAt !== null) {
+          deps.assistantRunState.startObservedRun(sessionId, turnStartedAt);
+        }
         deps.assistantRunState.markResponseCompleted(sessionId, {
           agent: completionInfo.agent,
           providerID: completionInfo.providerID,
