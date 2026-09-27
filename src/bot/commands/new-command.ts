@@ -14,6 +14,7 @@ import { isForegroundBusy } from "../../app/services/run-control-service.js";
 import { replyBusyBlocked } from "../messages/busy-blocked-renderer.js";
 import { logger } from "../../utils/logger.js";
 import { t } from "../../i18n/index.js";
+import { formatSessionTitle } from "../../app/formatters/session-title-formatter.js";
 import { attachToSession } from "../../app/services/attach-service.js";
 
 export type NewCommandDeps = Pick<
@@ -87,7 +88,7 @@ export async function newCommand(ctx: CommandContext<Context>, deps: NewCommandD
       variantName,
     );
 
-    await ctx.reply(t("new.created", { title: session.title }), {
+    await ctx.reply(t("new.created", { title: formatSessionTitle(session.title) }), {
       reply_markup: keyboard,
     });
   } catch (error) {

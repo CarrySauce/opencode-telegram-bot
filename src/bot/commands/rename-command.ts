@@ -1,6 +1,7 @@
 import { CommandContext, Context } from "grammy";
 import type { AppContainer } from "../../app/bootstrap/app-container.js";
-import { getCurrentSession } from "../../app/services/session-service.js";
+import { fetchSessionTitle, getCurrentSession } from "../../app/services/session-service.js";
+import { formatSessionTitle } from "../../app/formatters/session-title-formatter.js";
 import { logger } from "../../utils/logger.js";
 import { t } from "../../i18n/index.js";
 import { buildRenameCancelKeyboard } from "../menus/rename-menu.js";
@@ -19,15 +20,13 @@ export async function renameCommand(
       return;
     }
 
-    const message = await ctx.reply(t("rename.prompt", { title: currentSession.title }), {
-      reply_markup: buildRenameCancelKeyboard(),
-    });
-
-    deps.renameManager.startWaiting(
-      currentSession.id,
-      currentSession.directory,
-      currentSession.title,
+    const currentTitle = await fetchSessionTitle(currentSession);
+    const message = await ctx.reply(
+      t("rename.prompt", { title: formatSessionTitle(currentTitle) }),
+      { reply_markup: buildRenameCancelKeyboard() },
     );
+
+    deps.renameManager.startWaiting(currentSession.id, currentSession.directory, currentTitle);
     deps.renameManager.setMessageId(message.message_id);
     deps.interactionManager.transition({
       expectedInput: "text",

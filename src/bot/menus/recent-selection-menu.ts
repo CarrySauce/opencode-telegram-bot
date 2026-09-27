@@ -2,6 +2,7 @@ import { InlineKeyboard } from "grammy";
 import { getProjectFolderName } from "./project-selection-menu.js";
 import type { RecentSession, RecentStatus } from "../../app/services/recent-sessions-service.js";
 import { t } from "../../i18n/index.js";
+import { formatSessionTitle } from "../../app/formatters/session-title-formatter.js";
 
 export const RECENT_CALLBACK_PREFIX = "recent:";
 const GLYPHS: Record<RecentStatus, string> = {
@@ -73,10 +74,11 @@ export function buildRecentMenu(rows: RecentSession[]): { text: string; keyboard
     const project = names[index] ?? "";
     const prefix = `${GLYPHS[status]} [${project}] `;
     const available = Math.max(0, 64 - [...prefix].length);
-    const title = [...session.title];
+    const displayTitle = formatSessionTitle(session.title);
+    const title = [...displayTitle];
     const trimmed = title.length > available
       ? `${title.slice(0, Math.max(0, available - 1)).join("")}…`
-      : session.title;
+      : displayTitle;
     keyboard.text(`${prefix}${trimmed}`, `${RECENT_CALLBACK_PREFIX}${index}`).row();
   });
   return {

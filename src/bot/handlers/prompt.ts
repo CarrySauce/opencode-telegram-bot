@@ -19,6 +19,7 @@ import { safeBackgroundTask } from "../../utils/safe-background-task.js";
 import { formatErrorDetails } from "../../utils/error-format.js";
 import { logger } from "../../utils/logger.js";
 import { t } from "../../i18n/index.js";
+import { formatSessionTitle } from "../../app/formatters/session-title-formatter.js";
 import type { AppContainer } from "../../app/bootstrap/app-container.js";
 import {
   attachToSession,
@@ -268,7 +269,7 @@ export async function processUserPrompt(
       variantName,
     );
 
-    await ctx.reply(t("bot.session_created", { title: currentSession.title }), {
+    await ctx.reply(t("bot.session_created", { title: formatSessionTitle(currentSession.title) }), {
       reply_markup: keyboard,
     });
   }

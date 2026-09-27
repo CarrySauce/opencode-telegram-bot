@@ -1,7 +1,8 @@
 import { Context } from "grammy";
 import { getStoredModel } from "../../app/services/model-selection-service.js";
 import { opencodeClient } from "../../opencode/client.js";
-import { getCurrentSession } from "../../app/services/session-service.js";
+import { fetchSessionTitle, getCurrentSession } from "../../app/services/session-service.js";
+import { formatSessionTitle } from "../../app/formatters/session-title-formatter.js";
 import { logger } from "../../utils/logger.js";
 import { t } from "../../i18n/index.js";
 import { alert, failure } from "./feedback.js";
@@ -36,7 +37,8 @@ export async function handleCompactDetails(ctx: Context, deps: InlineMenuDeps): 
   }
 
   await ctx.answerCallbackQuery();
-  await ctx.editMessageText(t("context.confirm_text", { title: session.title }), {
+  const title = formatSessionTitle(await fetchSessionTitle(session));
+  await ctx.editMessageText(t("context.confirm_text", { title }), {
     reply_markup: appendInlineMenuCancelButton(buildCompactConfirmationMenu(), "context"),
   });
   deps.interactionManager.transition({

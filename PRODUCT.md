@@ -48,7 +48,7 @@ No public inbound ports are required for normal usage.
 - Browse up to `SESSIONS_LIST_LIMIT` recent root sessions across projects and git worktrees with running, idle, question and permission status; select one to switch project and follow it, including after detach
 - Switching to an existing session adopts the agent, model, and variant it last ran with
 - Create a new session
-- Use OpenCode-generated session title (based on conversation)
+- Use OpenCode-generated session title (based on conversation); a session OpenCode has not named yet is shown as "new session" wherever the bot names a session, and `/status`, `/rename` and `/detach` name the current session with the title OpenCode has for it at that moment
 
 ### Task handling
 

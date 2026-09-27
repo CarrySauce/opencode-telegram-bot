@@ -17,6 +17,7 @@ const mocked = vi.hoisted(() => ({
   } as { id: string; title: string; directory: string } | null,
   updateSessionMock: vi.fn(),
   setCurrentSessionMock: vi.fn(),
+  fetchSessionTitleMock: vi.fn(),
   pinnedOnSessionChangeMock: vi.fn(),
 }));
 
@@ -31,6 +32,7 @@ vi.mock("../../../src/opencode/client.js", () => ({
 vi.mock("../../../src/app/services/session-service.js", () => ({
   getCurrentSession: vi.fn(() => mocked.currentSession),
   setCurrentSession: mocked.setCurrentSessionMock,
+  fetchSessionTitle: mocked.fetchSessionTitleMock,
 }));
 
 function createRenameCommandContext(messageId: number): Context {
@@ -95,6 +97,8 @@ describe("bot/commands/rename", () => {
       error: null,
     });
     mocked.setCurrentSessionMock.mockReset();
+    mocked.fetchSessionTitleMock.mockReset();
+    mocked.fetchSessionTitleMock.mockResolvedValue("Old title");
     mocked.pinnedOnSessionChangeMock.mockReset();
     mocked.pinnedOnSessionChangeMock.mockResolvedValue(undefined);
   });
@@ -112,6 +116,31 @@ describe("bot/commands/rename", () => {
     expect(interactionState?.expectedInput).toBe("text");
     expect(interactionState?.metadata.sessionId).toBe("session-1");
     expect(interactionState?.metadata.messageId).toBe(555);
+  });
+
+  it("prompts with the title OpenCode has for the session now", async () => {
+    mocked.fetchSessionTitleMock.mockResolvedValue("Generated title");
+    const ctx = createRenameCommandContext(555);
+
+    await renameCommand(ctx as never, createDeps());
+
+    expect(ctx.reply).toHaveBeenCalledWith(
+      t("rename.prompt", { title: "Generated title" }),
+      expect.anything(),
+    );
+    expect(container.renameManager.getSessionInfo()?.currentTitle).toBe("Generated title");
+  });
+
+  it("prompts with the new-session name while OpenCode has not named the session", async () => {
+    mocked.fetchSessionTitleMock.mockResolvedValue("");
+    const ctx = createRenameCommandContext(555);
+
+    await renameCommand(ctx as never, createDeps());
+
+    expect(ctx.reply).toHaveBeenCalledWith(
+      t("rename.prompt", { title: t("pinned.default_session_title") }),
+      expect.anything(),
+    );
   });
 
   it("renames session on valid text and clears states", async () => {

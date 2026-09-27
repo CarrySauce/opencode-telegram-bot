@@ -1,7 +1,12 @@
 import { CommandContext, Context } from "grammy";
 import type { AppContainer } from "../../app/bootstrap/app-container.js";
 import { getCurrentProject } from "../../app/stores/settings-store.js";
-import { clearSession, getCurrentSession } from "../../app/services/session-service.js";
+import {
+  clearSession,
+  fetchSessionTitle,
+  getCurrentSession,
+} from "../../app/services/session-service.js";
+import { formatSessionTitle } from "../../app/formatters/session-title-formatter.js";
 import { detachAttachedSession } from "../../app/services/attach-service.js";
 import { clearPromptResponseMode } from "../handlers/prompt.js";
 import { logger } from "../../utils/logger.js";
@@ -35,6 +40,8 @@ export async function detachCommand(
       return;
     }
 
+    const title = await fetchSessionTitle(currentSession);
+
     detachAttachedSession("detach_command", deps);
     clearPromptResponseMode(currentSession.id);
     deps.foregroundSessionState.markIdle(currentSession.id);
@@ -64,7 +71,7 @@ export async function detachCommand(
       `[Detach] Detached from session: id=${currentSession.id}, title="${currentSession.title}", project=${currentProject.worktree}`,
     );
 
-    await ctx.reply(t("detach.success", { title: currentSession.title }), {
+    await ctx.reply(t("detach.success", { title: formatSessionTitle(title) }), {
       ...(keyboard ? { reply_markup: keyboard } : {}),
     });
   } catch (error) {

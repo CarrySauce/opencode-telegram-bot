@@ -3,8 +3,8 @@ import type { Context } from "grammy";
 import { createTestAppContainer } from "../../helpers/app-container.js";
 import { t } from "../../../src/i18n/index.js";
 
-const mocked = vi.hoisted(() => ({ session: vi.fn(), summarize: vi.fn(), model: vi.fn() }));
-vi.mock("../../../src/app/services/session-service.js", () => ({ getCurrentSession: mocked.session }));
+const mocked = vi.hoisted(() => ({ session: vi.fn(), title: vi.fn(), summarize: vi.fn(), model: vi.fn() }));
+vi.mock("../../../src/app/services/session-service.js", () => ({ getCurrentSession: mocked.session, fetchSessionTitle: mocked.title }));
 vi.mock("../../../src/app/services/model-selection-service.js", () => ({ getStoredModel: mocked.model }));
 vi.mock("../../../src/opencode/client.js", () => ({ opencodeClient: { session: { summarize: mocked.summarize } } }));
 
@@ -27,6 +27,7 @@ describe("context compaction flow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocked.session.mockReturnValue({ id: "session", directory: "/project", title: "Task" });
+    mocked.title.mockResolvedValue("Task");
     mocked.model.mockReturnValue({ providerID: "provider", modelID: "model" });
     mocked.summarize.mockResolvedValue({});
   });
@@ -82,6 +83,18 @@ describe("context compaction flow", () => {
     await handleCompactDetails(repeated, deps);
     expect(repeated.editMessageText).not.toHaveBeenCalled();
     expect(mocked.summarize).not.toHaveBeenCalled();
+  });
+
+  it("names the session with the title OpenCode has for it, or as a new session while untitled", async () => {
+    for (const [fetched, shown] of [["Generated title", "Generated title"], ["", t("pinned.default_session_title")]]) {
+      mocked.title.mockResolvedValue(fetched);
+      const deps = createTestAppContainer();
+      deps.interactionManager.start({ kind: "inline", expectedInput: "callback", metadata: { menuKind: "context", messageId: 7, stage: "details" } });
+      const ctx = callback("compact:details");
+      await handleCompactDetails(ctx, deps);
+      expect(ctx.editMessageText).toHaveBeenCalledWith(t("context.confirm_text", { title: shown }), expect.anything());
+    }
+    expect(mocked.title).toHaveBeenCalledWith({ id: "session", directory: "/project", title: "Task" });
   });
 
   it("answers the callback before waiting for Telegram to edit the confirmation", async () => {

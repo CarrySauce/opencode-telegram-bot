@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildRecentMenu } from "../../../src/bot/menus/recent-selection-menu.js";
 import type { RecentSession } from "../../../src/app/services/recent-sessions-service.js";
+import { t } from "../../../src/i18n/index.js";
 
 const row = (id: string, directory: string, status: RecentSession["status"]): RecentSession => ({
   session: { id, directory, title: "A".repeat(100) } as RecentSession["session"], status,
@@ -60,5 +61,12 @@ describe("recent session buttons", () => {
     const labels = keyboard.inline_keyboard.flat().map((button) => button.text);
     expect(new Set(labels).size).toBe(3);
     expect(labels.every((label) => [...label].length <= 64)).toBe(true);
+  });
+
+  it("shows a session OpenCode has not named yet as a new session", () => {
+    const { keyboard } = buildRecentMenu([
+      { session: { id: "a", directory: "/repo", title: "" } as RecentSession["session"], status: "idle" },
+    ]);
+    expect(keyboard.inline_keyboard.flat()[0]?.text).toBe(`○ [repo] ${t("pinned.default_session_title")}`);
   });
 });
