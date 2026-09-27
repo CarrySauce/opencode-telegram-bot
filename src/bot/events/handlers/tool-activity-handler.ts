@@ -13,7 +13,10 @@ import {
   formatDuration,
   formatDurationOverHours,
 } from "../../../app/formatters/duration-formatter.js";
-import { getSendDiffFileAttachments } from "../../../app/stores/settings-store.js";
+import {
+  getDeleteCompactProgressOnFinish,
+  getSendDiffFileAttachments,
+} from "../../../app/stores/settings-store.js";
 import type { RunningToolTick } from "../../streaming/running-tool-tracker.js";
 import type { ToolStreamKey } from "../../streaming/tool-call-streamer.js";
 import {
@@ -65,6 +68,11 @@ function prepareDocumentCaption(caption: string): string {
   }
 
   return `${normalizedCaption.slice(0, TELEGRAM_DOCUMENT_CAPTION_MAX_LENGTH - 3)}...`;
+}
+
+/** Launched in the background: the operation outlives the turn that started it. */
+function isBackgroundTool(toolInfo: ToolInfo): boolean {
+  return toolInfo.input?.background === true;
 }
 
 function getCompactToolActivity(toolInfo: ToolInfo): string {
@@ -126,6 +134,17 @@ function finalizeLiveToolLine(
   );
 }
 
+/** A finished background line no longer needs its message kept past the turn. */
+function unpinLiveToolLine(runtime: SessionRuntimeState, toolInfo: ToolInfo): void {
+  if (isBackgroundTool(toolInfo)) {
+    runtime.toolCallStreamer.unpinEntry(
+      toolInfo.sessionId,
+      getLiveToolPrefix(toolInfo.callId),
+      getToolStreamKey(toolInfo.tool),
+    );
+  }
+}
+
 async function renderSubagentCards(
   runtime: SessionRuntimeState,
   sessionId: string,
@@ -143,23 +162,46 @@ async function renderSubagentCards(
       continue;
     }
 
-    runtime.toolCallStreamer.replaceByPrefix(
-      sessionId,
-      SUBAGENT_STREAM_PREFIX,
-      text,
-      getSubagentStreamKey(subagent.cardId),
-    );
+    const streamKey = getSubagentStreamKey(subagent.cardId);
+    runtime.toolCallStreamer.replaceByPrefix(sessionId, SUBAGENT_STREAM_PREFIX, text, streamKey);
+
+    // A background subagent's card keeps updating after its parent's turn ends.
+    if (!subagent.background) {
+      continue;
+    }
+    if (subagent.status === "pending" || subagent.status === "running") {
+      runtime.toolCallStreamer.pinEntry(sessionId, SUBAGENT_STREAM_PREFIX, streamKey);
+    } else {
+      runtime.toolCallStreamer.unpinEntry(sessionId, SUBAGENT_STREAM_PREFIX, streamKey);
+    }
   }
 }
 
 function handleRunningToolTick({ runtime, policy }: EventHandlerBase, tick: RunningToolTick): void {
   if (!policy.isForegroundSession(tick.sessionId)) {
+    // The user moved to another session: what ran in the background here stays as it was.
+    runtime.stopBackgroundOperations("session_not_current", tick.sessionId);
     return;
   }
 
   const elapsed = formatElapsed(tick);
 
   if (isCompactProgressMode()) {
+    if (runtime.runningToolTracker.isBackground(tick.callId)) {
+      const toolInfo = runtime.getRunningToolInfo(tick.sessionId, tick.callId);
+      const activity = toolInfo ? getCompactToolActivity(toolInfo) : "";
+      if (activity) {
+        runtime.compactProgressStreamer.updateBackgroundOperation(
+          tick.sessionId,
+          tick.callId,
+          appendDuration(activity, elapsed),
+        );
+      }
+      if (runtime.runningToolTracker.isDetached(tick.callId)) {
+        return;
+      }
+    }
+
     const cached = runtime.getCompactActivity(tick.sessionId);
     if (!cached || cached.callId !== tick.callId) {
       return;
@@ -204,6 +246,7 @@ async function refreshSubagentCards(
   }
 
   if (!policy.isForegroundSession(sessionId)) {
+    runtime.stopBackgroundOperations("session_not_current", sessionId);
     return;
   }
 
@@ -240,6 +283,11 @@ export function registerToolActivityHandlers(deps: ToolActivityDeps): void {
     // A failed call is just as finished as a successful one: leaving it tracked
     // would keep its timer ticking for a tool that already stopped running.
     const isTerminal = status === "completed" || status === "error";
+    const background = isBackgroundTool(toolInfo);
+    // Read before the release below forgets the call. A background call no longer
+    // tracked was stopped: its line or card stays as it was.
+    const backgroundTracked = background && runtime.runningToolTracker.isBackground(callId);
+    const backgroundDetached = background && runtime.runningToolTracker.isDetached(callId);
 
     if (isTerminal) {
       if (tracksElapsed) {
@@ -249,6 +297,7 @@ export function registerToolActivityHandlers(deps: ToolActivityDeps): void {
 
         if (!compactMode && status === "error") {
           finalizeLiveToolLine(runtime, toolInfo, durationMs);
+          unpinLiveToolLine(runtime, toolInfo);
         }
 
         // Only a completed call reaches the tool callback, so only it has a
@@ -260,17 +309,31 @@ export function registerToolActivityHandlers(deps: ToolActivityDeps): void {
 
       runtime.deleteRunningToolInfo(sessionId, callId);
     } else if (tracksElapsed) {
-      runtime.runningToolTracker.track(sessionId, callId);
+      runtime.runningToolTracker.track(sessionId, callId, background);
       runtime.setRunningToolInfo(toolInfo);
       if (!compactMode) {
         const message = formatToolInfo(toolInfo);
         if (message) {
           const tick = runtime.runningToolTracker.displayTick(callId);
+          const streamKey = getToolStreamKey(toolInfo.tool);
           runtime.toolCallStreamer.replaceByPrefix(
             sessionId,
             getLiveToolPrefix(callId),
             `${RUNNING_ICON} ${tick ? appendDuration(message, formatElapsed(tick)) : message}`,
-            getToolStreamKey(toolInfo.tool),
+            streamKey,
+          );
+          if (background) {
+            runtime.toolCallStreamer.pinEntry(sessionId, getLiveToolPrefix(callId), streamKey);
+          }
+        }
+      } else if (background) {
+        const activity = getCompactToolActivity(toolInfo);
+        const tick = runtime.runningToolTracker.displayTick(callId);
+        if (activity) {
+          runtime.compactProgressStreamer.addBackgroundOperation(
+            sessionId,
+            callId,
+            tick ? appendDuration(activity, formatElapsed(tick)) : activity,
           );
         }
       }
@@ -278,6 +341,18 @@ export function registerToolActivityHandlers(deps: ToolActivityDeps): void {
 
     if (!compactMode) {
       return;
+    }
+
+    if (background && isTerminal) {
+      // Counted on the card it started in, which closes with it once parked.
+      void runtime.compactProgressStreamer
+        .endBackgroundOperation(sessionId, callId, getDeleteCompactProgressOnFinish())
+        .catch((error) => {
+          logger.error("[Bot] Failed to close the progress card of a background operation", error);
+        });
+      if (!backgroundTracked || backgroundDetached) {
+        return;
+      }
     }
 
     if (isTerminal) {
@@ -298,7 +373,7 @@ export function registerToolActivityHandlers(deps: ToolActivityDeps): void {
       }
     }
 
-    if (status === "completed") {
+    if (status === "completed" && !background) {
       runtime.compactProgressStreamer.addToolCall(sessionId, callId);
     }
   });
@@ -336,6 +411,7 @@ export function registerToolActivityHandlers(deps: ToolActivityDeps): void {
           durationMs === undefined ? message : appendDuration(message, formatDuration(durationMs)),
           getToolStreamKey(toolInfo.tool),
         );
+        unpinLiveToolLine(runtime, toolInfo);
       }
     } catch (err) {
       logger.error("Failed to send tool notification to Telegram:", err);

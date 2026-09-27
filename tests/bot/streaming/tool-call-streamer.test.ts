@@ -662,6 +662,91 @@ describe("bot/streaming/tool-call-streamer", () => {
     expect(sendText).toHaveBeenNthCalledWith(2, "s1", "after break");
   });
 
+  describe("pinned entries", () => {
+    function createStreamer() {
+      let id = 1;
+      const sendText = vi.fn(async (_sessionId: string, _text: string) => id++);
+      const editText = vi.fn(
+        async (_sessionId: string, _messageId: number, _text: string) => undefined,
+      );
+      const streamer = new ToolCallStreamer({
+        throttleMs: 0,
+        sendText,
+        editText,
+        deleteText: vi.fn().mockResolvedValue(undefined),
+      });
+      return { streamer, sendText, editText };
+    }
+
+    it("keeps editing a pinned line in its own message after the turn ends", async () => {
+      vi.useFakeTimers();
+      const { streamer, sendText, editText } = createStreamer();
+
+      streamer.replaceByPrefix("s1", "⏳bg", "⏳ 💻 bash sleep 90");
+      streamer.pinEntry("s1", "⏳bg");
+      await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1));
+      await streamer.breakSession("s1", "session_idle");
+
+      streamer.replaceByPrefix("s1", "⏳bg", "⏳ 💻 bash sleep 90 · 🕒 30s");
+      await vi.waitFor(() => expect(editText).toHaveBeenCalledTimes(1));
+      streamer.replaceByPrefix("s1", "⏳bg", "💻 bash sleep 90 · 🕒 1m 30s");
+      await vi.waitFor(() => expect(editText).toHaveBeenCalledTimes(2));
+
+      expect(editText).toHaveBeenLastCalledWith("s1", 1, "💻 bash sleep 90 · 🕒 1m 30s");
+      expect(sendText).toHaveBeenCalledTimes(1);
+    });
+
+    it("opens a new message for output that comes after the break", async () => {
+      vi.useFakeTimers();
+      const { streamer, sendText } = createStreamer();
+
+      streamer.replaceByPrefix("s1", "⏳bg", "⏳ bg");
+      streamer.pinEntry("s1", "⏳bg");
+      await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1));
+      await streamer.breakSession("s1", "assistant_message_completed");
+
+      streamer.replaceByPrefix("s1", "⏳next", "⏳ next");
+      await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(2));
+      expect(sendText).toHaveBeenLastCalledWith("s1", "⏳ next");
+    });
+
+    it("lets go of the message at the next break once the line is unpinned", async () => {
+      vi.useFakeTimers();
+      const { streamer, sendText, editText } = createStreamer();
+
+      streamer.replaceByPrefix("s1", "⏳bg", "⏳ bg");
+      streamer.pinEntry("s1", "⏳bg");
+      await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1));
+      await streamer.breakSession("s1", "session_idle");
+      streamer.replaceByPrefix("s1", "⏳bg", "bg done");
+      streamer.unpinEntry("s1", "⏳bg");
+      await vi.waitFor(() => expect(editText).toHaveBeenCalledTimes(1));
+      await streamer.breakSession("s1", "session_idle");
+
+      streamer.replaceByPrefix("s1", "⏳bg", "bg changed again");
+      await vi.advanceTimersByTimeAsync(500);
+      expect(sendText).toHaveBeenCalledTimes(2);
+      expect(sendText).toHaveBeenLastCalledWith("s1", "bg changed again");
+    });
+
+    it("ignores later updates of a pinned line once it is frozen", async () => {
+      vi.useFakeTimers();
+      const { streamer, sendText, editText } = createStreamer();
+
+      streamer.replaceByPrefix("s1", "⏳bg", "⏳ bg · 🕒 30s");
+      streamer.pinEntry("s1", "⏳bg");
+      await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1));
+      await streamer.breakSession("s1", "session_idle");
+      streamer.freezePinnedEntries("s1");
+
+      streamer.replaceByPrefix("s1", "⏳bg", "bg · 🕒 1m 30s");
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(editText).not.toHaveBeenCalled();
+      expect(sendText).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("reads throttleMs again for the next flush cycle", async () => {
     vi.useFakeTimers();
 

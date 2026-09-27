@@ -47,6 +47,12 @@ interface RunningToolHooks {
   onHeartbeat: (sessionId: string) => void;
 }
 
+function isRunningBackgroundSubagent(subagent: SubagentInfo): boolean {
+  return Boolean(
+    subagent.background && (subagent.status === "pending" || subagent.status === "running"),
+  );
+}
+
 function sessionKey(sessionId: string, id: string): string {
   return `${sessionId}:${id}`;
 }
@@ -157,6 +163,14 @@ export class SessionRuntimeState {
           this.requireForegroundDestination(sessionId, "Compact progress", "delete"),
           messageId,
         ),
+      // A parked card keeps its background operations; the next stretch no longer runs them.
+      onPark: (sessionId, callIds) => {
+        this.runningToolTracker.detach(callIds);
+        const cached = this.compactActivityBySession.get(sessionId);
+        if (cached && callIds.includes(cached.callId)) {
+          this.compactActivityBySession.delete(sessionId);
+        }
+      },
     });
 
     this.toolCallStreamer = new ToolCallStreamer({
@@ -414,14 +428,74 @@ export class SessionRuntimeState {
     this.subagentSnapshots.set(sessionId, subagents);
   }
 
-  /** Stops tool timers and drops tool bookkeeping for one session. */
-  clearToolTracking(sessionId: string, reason: string): void {
-    this.runningToolTracker.clearSession(sessionId, reason);
-    this.runningToolTracker.setHeartbeatActive(sessionId, false);
+  /**
+   * Stops tool timers and drops tool bookkeeping for one session. A turn boundary of the
+   * foreground session passes `keepBackground`: background operations outlive the turn.
+   */
+  clearToolTracking(sessionId: string, reason: string, keepBackground = false): void {
+    const keptCallIds = new Set(
+      keepBackground ? this.runningToolTracker.backgroundCallIds(sessionId) : [],
+    );
+    this.runningToolTracker.clearSession(sessionId, reason, keepBackground);
     this.compactActivityBySession.delete(sessionId);
-    this.subagentSnapshots.delete(sessionId);
-    deleteSessionKeys(this.runningToolInfos, sessionId);
+    const keptSubagents = keepBackground
+      ? (this.subagentSnapshots.get(sessionId) ?? []).filter(isRunningBackgroundSubagent)
+      : [];
+    this.setKeptSubagents(sessionId, keptSubagents);
+    for (const key of Array.from(this.runningToolInfos.keys())) {
+      const callId = key.slice(sessionId.length + 1);
+      if (key.startsWith(`${sessionId}:`) && !keptCallIds.has(callId)) {
+        this.runningToolInfos.delete(key);
+      }
+    }
     deleteSessionKeys(this.completedToolDurations, sessionId);
+  }
+
+  /**
+   * Stops following background operations of one session, or of all: their lines and
+   * cards stay as they are and a later completion no longer changes them.
+   */
+  stopBackgroundOperations(reason: string, sessionId?: string): void {
+    const callIds = this.runningToolTracker.backgroundCallIds(sessionId);
+    for (const callId of callIds) {
+      this.runningToolTracker.release(callId);
+    }
+    for (const [key, info] of Array.from(this.runningToolInfos)) {
+      if (callIds.includes(info.callId)) {
+        this.runningToolInfos.delete(key);
+      }
+    }
+
+    this.toolCallStreamer.freezePinnedEntries(sessionId);
+    this.compactProgressStreamer.dropBackgroundOperations(sessionId);
+    for (const [snapshotSessionId, subagents] of Array.from(this.subagentSnapshots)) {
+      if (sessionId === undefined || snapshotSessionId === sessionId) {
+        this.setKeptSubagents(
+          snapshotSessionId,
+          subagents.filter((subagent) => !subagent.background),
+        );
+      }
+    }
+
+    if (callIds.length > 0) {
+      logger.debug(
+        `[Bot] Stopped background operations: session=${sessionId ?? "all"}, count=${callIds.length}, reason=${reason}`,
+      );
+    }
+  }
+
+  private setKeptSubagents(sessionId: string, subagents: SubagentInfo[]): void {
+    if (subagents.length === 0) {
+      this.subagentSnapshots.delete(sessionId);
+      this.runningToolTracker.setHeartbeatActive(sessionId, false);
+      return;
+    }
+
+    this.subagentSnapshots.set(sessionId, subagents);
+    this.runningToolTracker.setHeartbeatActive(
+      sessionId,
+      subagents.some((subagent) => subagent.status === "pending" || subagent.status === "running"),
+    );
   }
 
   // --- clearing ---

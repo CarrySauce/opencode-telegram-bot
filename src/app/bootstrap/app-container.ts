@@ -65,6 +65,8 @@ export interface AppContainer {
   resetAggregator(): void;
   /** Clears response streams, tool trackers, background tracking and run state. */
   resetRuntimeStreams(reason: string): void;
+  /** Stops following background operations; their lines and cards stay as they are. */
+  stopBackgroundOperations(reason: string, sessionId?: string): void;
   /**
    * Stops ready-restore, the model catalog wait, event listening and the heartbeat,
    * and clears runtime state.
@@ -134,6 +136,8 @@ export function createAppContainer(): AppContainer {
     resetInteractionError: (scope, reason) => interactionManager.clearErrorScope(scope, reason),
     resetAggregator: () => summaryAggregator.clear(),
     resetRuntimeStreams: (reason) => eventSubscriptionService.clearRuntimeState(reason),
+    stopBackgroundOperations: (reason, sessionId) =>
+      eventSubscriptionService.stopBackgroundOperations(reason, sessionId),
 
     cleanupProcess: (reason) => {
       stopReadyRestore();

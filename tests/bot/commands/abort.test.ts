@@ -286,6 +286,26 @@ describe("bot/commands/abort", () => {
     expect(shouldSuppressUserAbortSessionError("session-1", "Aborted")).toBe(false);
   });
 
+  it("stops following background operations of the aborted session", async () => {
+    mocked.currentSession = { id: "session-1", title: "Session", directory: "D:/repo" };
+    mocked.abortMock.mockResolvedValue({ data: true, error: null });
+    mocked.statusMock.mockResolvedValue({ data: { "session-1": { type: "idle" } }, error: null });
+    const stopBackgroundOperations = vi.fn();
+    const ctx = {
+      chat: { id: 777 },
+      reply: vi.fn().mockResolvedValue({ message_id: 88 }),
+      api: { editMessageText: vi.fn().mockResolvedValue(undefined) },
+    } as unknown as Context;
+
+    await abortCurrentOperation(
+      ctx as never,
+      { ...createDeps(), stopBackgroundOperations },
+      { notifyUser: false },
+    );
+
+    expect(stopBackgroundOperations).toHaveBeenCalledWith("abort_command", "session-1");
+  });
+
   it("can abort silently without progress messages", async () => {
     activateInteractionState();
 

@@ -34,9 +34,13 @@ export function registerSessionLifecycleHandlers(deps: SessionLifecycleDeps): vo
     // returns below would otherwise leave a compact-progress timer armed.
     // A still-current session keeps the card until after in-flight completion
     // work, then finalizes it (delete or finished summary).
-    runtime.clearToolTracking(sessionId, "session_idle");
     const canFinalizeCompactProgress =
       Boolean(policy.getDestination(sessionId)) && policy.isForegroundSession(sessionId);
+    // Background operations outlive the turn only in the session the user follows.
+    if (!canFinalizeCompactProgress) {
+      runtime.stopBackgroundOperations("session_idle", sessionId);
+    }
+    runtime.clearToolTracking(sessionId, "session_idle", canFinalizeCompactProgress);
     if (!canFinalizeCompactProgress) {
       runtime.compactProgressStreamer.clearSession(sessionId, "session_idle");
     }
@@ -74,9 +78,13 @@ export function registerSessionLifecycleHandlers(deps: SessionLifecycleDeps): vo
 
   summaryAggregator.setOnSessionError(async (sessionId, message) => {
     await markAttachedSessionIdle(sessionId, deps);
-    runtime.clearToolTracking(sessionId, "session_error");
-
     const destination = policy.getDestination(sessionId);
+    const keepBackground = Boolean(destination) && policy.isForegroundSession(sessionId);
+    if (!keepBackground) {
+      runtime.stopBackgroundOperations("session_error", sessionId);
+    }
+    runtime.clearToolTracking(sessionId, "session_error", keepBackground);
+
     if (!destination) {
       clearPromptResponseMode(sessionId);
       runtime.compactProgressStreamer.clearSession(sessionId, "session_error_no_bot_context");
@@ -97,7 +105,8 @@ export function registerSessionLifecycleHandlers(deps: SessionLifecycleDeps): vo
     }
 
     runtime.clearAssistantResponseSession(sessionId, "session_error");
-    runtime.compactProgressStreamer.clearSession(sessionId, "session_error");
+    // Parked cards keep counting their background operations, as their full-mode lines do.
+    runtime.compactProgressStreamer.discardOpenCard(sessionId, "session_error");
     clearPromptResponseMode(sessionId);
     deps.assistantRunState.clearRun(sessionId, "session_error");
     await Promise.all([

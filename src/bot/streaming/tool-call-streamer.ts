@@ -128,6 +128,8 @@ export class ToolCallStreamer {
   private readonly heldSessions = new Set<string>();
   private readonly documentBoundaries = new Map<string, { count: number; done: Promise<void>; release: () => void }>();
   private readonly frozenToolEntries = new Set<string>();
+  // Lines of operations that outlive the turn: their message stays editable after a break.
+  private readonly pinnedEntries = new Set<string>();
 
   constructor(options: ToolCallStreamerOptions) {
     this.throttleMs = options.throttleMs;
@@ -163,7 +165,7 @@ export class ToolCallStreamer {
     if (!sessionId || !normalizedPrefix || !normalizedText) {
       return;
     }
-    if (this.frozenToolEntries.has(`${sessionId}:${streamKey}:${normalizedPrefix}`)) {
+    if (this.frozenToolEntries.has(this.getEntryId(sessionId, streamKey, normalizedPrefix))) {
       return;
     }
 
@@ -207,6 +209,31 @@ export class ToolCallStreamer {
     }
     state.latestParts = buildParts(state.entries);
     this.ensureTimer(state);
+  }
+
+  /**
+   * Keeps an entry editable past `breakSession`: its message is no longer where new
+   * output goes, but later updates of the entry still edit it in place.
+   */
+  pinEntry(sessionId: string, prefix: string, streamKey: ToolStreamKey = DEFAULT_STREAM_KEY): void {
+    const normalizedPrefix = prefix.trim();
+    if (sessionId && normalizedPrefix) {
+      this.pinnedEntries.add(this.getEntryId(sessionId, streamKey, normalizedPrefix));
+    }
+  }
+
+  unpinEntry(sessionId: string, prefix: string, streamKey: ToolStreamKey = DEFAULT_STREAM_KEY): void {
+    this.pinnedEntries.delete(this.getEntryId(sessionId, streamKey, prefix.trim()));
+  }
+
+  /** Pinned entries of a session (or of all sessions) stop taking updates and stay as they are. */
+  freezePinnedEntries(sessionId?: string): void {
+    for (const entryId of Array.from(this.pinnedEntries)) {
+      if (sessionId === undefined || entryId.startsWith(`${sessionId}:`)) {
+        this.pinnedEntries.delete(entryId);
+        this.frozenToolEntries.add(entryId);
+      }
+    }
   }
 
   /** A document divides new tool messages from older, still-editable calls. */
@@ -258,8 +285,13 @@ export class ToolCallStreamer {
     if (reason === "session_error" || reason === "session_idle") {
       for (const state of states) {
         for (const entry of state.entries) {
-          if (entry.prefix?.startsWith("⏳") && entry.text.startsWith("⏳")) {
-            this.frozenToolEntries.add(`${sessionId}:${state.key}:${entry.prefix}`);
+          const entryId = this.getEntryId(sessionId, state.key, entry.prefix ?? "");
+          if (
+            entry.prefix?.startsWith("⏳") &&
+            entry.text.startsWith("⏳") &&
+            !this.pinnedEntries.has(entryId)
+          ) {
+            this.frozenToolEntries.add(entryId);
           }
         }
       }
@@ -271,6 +303,10 @@ export class ToolCallStreamer {
         await this.documentBoundaries.get(sessionId)?.done;
       }
       await this.enqueueTask(state, () => this.syncState(state, reason));
+      if (this.hasPinnedEntry(state)) {
+        this.keepAfterBreak(state);
+        continue;
+      }
       this.cancelState(state);
       this.removeState(state);
     }
@@ -278,9 +314,11 @@ export class ToolCallStreamer {
   }
 
   clearSession(sessionId: string, reason: string): void {
-    for (const key of this.frozenToolEntries) {
-      if (key.startsWith(`${sessionId}:`)) {
-        this.frozenToolEntries.delete(key);
+    for (const entries of [this.frozenToolEntries, this.pinnedEntries]) {
+      for (const key of entries) {
+        if (key.startsWith(`${sessionId}:`)) {
+          entries.delete(key);
+        }
       }
     }
     this.documentBoundaries.get(sessionId)?.release();
@@ -307,6 +345,7 @@ export class ToolCallStreamer {
 
   clearAll(reason: string): void {
     this.frozenToolEntries.clear();
+    this.pinnedEntries.clear();
     for (const boundary of this.documentBoundaries.values()) {
       boundary.release();
     }
@@ -331,6 +370,31 @@ export class ToolCallStreamer {
 
   private getStateId(sessionId: string, streamKey: ToolStreamKey): string {
     return `${sessionId}:${streamKey}`;
+  }
+
+  private getEntryId(sessionId: string, streamKey: ToolStreamKey, prefix: string): string {
+    return `${sessionId}:${streamKey}:${prefix}`;
+  }
+
+  private hasPinnedEntry(state: StreamState): boolean {
+    return state.entries.some(
+      (entry) =>
+        entry.prefix !== undefined &&
+        this.pinnedEntries.has(this.getEntryId(state.sessionId, state.key, entry.prefix)),
+    );
+  }
+
+  /**
+   * Leaves the state findable by its prefixes but no longer current, so new output opens
+   * a new message; an update that landed during the break is synced now.
+   */
+  private keepAfterBreak(state: StreamState): void {
+    const stateId = this.getStateId(state.sessionId, state.key);
+    if (this.states.get(stateId) === state) {
+      this.states.delete(stateId);
+    }
+    state.isBreaking = false;
+    this.ensureTimer(state);
   }
 
   private getStatesForSession(sessionId: string): StreamState[] {

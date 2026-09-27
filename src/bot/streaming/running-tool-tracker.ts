@@ -21,6 +21,11 @@ interface TrackedCall {
   startedAt: number;
   lastBucketMs?: number;
   stopped: boolean;
+  // A background operation outlives the turn that started it.
+  background: boolean;
+  // Its progress card was closed for the stretch, so it no longer counts as what the
+  // session is running now.
+  detached: boolean;
 }
 
 /**
@@ -49,13 +54,49 @@ export class RunningToolTracker {
     this.onHeartbeat = options.onHeartbeat;
   }
 
-  track(sessionId: string, callId: string): void {
-    if (!sessionId || !callId || this.calls.has(callId)) {
+  track(sessionId: string, callId: string, background = false): void {
+    if (!sessionId || !callId) {
       return;
     }
 
-    this.calls.set(callId, { sessionId, startedAt: Date.now(), stopped: false });
+    const existing = this.calls.get(callId);
+    if (existing) {
+      existing.background ||= background;
+      return;
+    }
+
+    this.calls.set(callId, {
+      sessionId,
+      startedAt: Date.now(),
+      stopped: false,
+      background,
+      detached: false,
+    });
     this.ensureTimer();
+  }
+
+  isBackground(callId: string): boolean {
+    return this.calls.get(callId)?.background ?? false;
+  }
+
+  isDetached(callId: string): boolean {
+    return this.calls.get(callId)?.detached ?? false;
+  }
+
+  detach(callIds: string[]): void {
+    for (const callId of callIds) {
+      const call = this.calls.get(callId);
+      if (call) {
+        call.detached = true;
+      }
+    }
+  }
+
+  /** Background calls of a session, or of every session. */
+  backgroundCallIds(sessionId?: string): string[] {
+    return Array.from(this.calls.entries())
+      .filter(([, call]) => call.background && (sessionId === undefined || call.sessionId === sessionId))
+      .map(([callId]) => callId);
   }
 
   /**
@@ -93,11 +134,11 @@ export class RunningToolTracker {
     this.stopTimerWhenIdle();
   }
 
-  clearSession(sessionId: string, reason: string): void {
+  clearSession(sessionId: string, reason: string, keepBackground = false): void {
     let clearedAny = this.heartbeatSessions.delete(sessionId);
 
     for (const [callId, call] of Array.from(this.calls.entries())) {
-      if (call.sessionId !== sessionId) {
+      if (call.sessionId !== sessionId || (keepBackground && call.background)) {
         continue;
       }
 
@@ -127,7 +168,7 @@ export class RunningToolTracker {
     const matches: { callId: string; startedAt: number }[] = [];
 
     for (const [callId, call] of this.calls) {
-      if (call.sessionId === sessionId) {
+      if (call.sessionId === sessionId && !call.detached) {
         matches.push({ callId, startedAt: call.startedAt });
       }
     }

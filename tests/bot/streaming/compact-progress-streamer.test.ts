@@ -483,4 +483,141 @@ describe("bot/streaming/compact-progress-streamer", () => {
     expect(sendText).toHaveBeenCalledTimes(1);
     expect(editText).toHaveBeenCalledWith("s1", 90, "⏳ Working\nstill working");
   });
+
+  describe("background operations", () => {
+    function createStreamer() {
+      let nextId = 10;
+      const sendText = vi.fn(async (_sessionId: string, _text: string) => nextId++);
+      const editText = vi.fn(
+        async (_sessionId: string, _messageId: number, _text: string) => undefined,
+      );
+      const deleteText = vi.fn(async (_sessionId: string, _messageId: number) => undefined);
+      const onPark = vi.fn();
+      const streamer = new CompactProgressStreamer({
+        throttleMs: 0,
+        sendText,
+        editText,
+        deleteText,
+        onPark,
+      });
+      return { streamer, sendText, editText, deleteText, onPark };
+    }
+
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    it("keeps a card with a running background operation open past its close", async () => {
+      const { streamer, editText, onPark } = createStreamer();
+
+      streamer.updateActivity("s1", "bash sleep 90");
+      streamer.addBackgroundOperation("s1", "call-bg", "bash sleep 90");
+      await tick();
+      await streamer.finalize("s1");
+      streamer.updateBackgroundOperation("s1", "call-bg", "bash sleep 90 · 🕒 30s");
+      await tick();
+
+      expect(onPark).toHaveBeenCalledWith("s1", ["call-bg"]);
+      expect(editText).toHaveBeenLastCalledWith("s1", 10, "⏳ Working\nbash sleep 90 · 🕒 30s");
+      expect(editText.mock.calls.some((call) => call[2].includes("Finished"))).toBe(false);
+    });
+
+    it("opens a new card for the next stretch while the parked one stays", async () => {
+      const { streamer, sendText, editText } = createStreamer();
+
+      streamer.addBackgroundOperation("s1", "call-bg", "bash sleep 90");
+      streamer.updateActivity("s1", "bash sleep 90");
+      await tick();
+      await streamer.finalize("s1");
+      streamer.updateActivity("s1", "💭 Thinking...");
+      await tick();
+      await streamer.finalize("s1");
+
+      expect(sendText).toHaveBeenCalledTimes(2);
+      expect(editText).toHaveBeenCalledWith(
+        "s1",
+        11,
+        "✅ Finished Work\ntool calls: 0 · changed files: 0",
+      );
+      expect(editText.mock.calls.some((call) => call[1] === 10 && call[2].includes("Finished"))).toBe(
+        false,
+      );
+    });
+
+    it("closes the parked card with its own counts when the operation ends", async () => {
+      const { streamer, editText } = createStreamer();
+
+      streamer.updateActivity("s1", "bash sleep 90");
+      streamer.addToolCall("s1", "call-read");
+      streamer.addBackgroundOperation("s1", "call-bg", "bash sleep 90");
+      await tick();
+      await streamer.finalize("s1");
+      await streamer.endBackgroundOperation("s1", "call-bg");
+
+      expect(editText).toHaveBeenLastCalledWith(
+        "s1",
+        10,
+        "✅ Finished Work\ntool calls: 2 · changed files: 0",
+      );
+    });
+
+    it("deletes the parked card when the operation ends with delete on finish", async () => {
+      const { streamer, deleteText } = createStreamer();
+
+      streamer.addBackgroundOperation("s1", "call-bg", "bash sleep 90");
+      streamer.updateActivity("s1", "bash sleep 90");
+      await tick();
+      await streamer.finalize("s1", true);
+      expect(deleteText).not.toHaveBeenCalled();
+
+      await streamer.endBackgroundOperation("s1", "call-bg", true);
+      expect(deleteText).toHaveBeenCalledWith("s1", 10);
+    });
+
+    it("falls back to the operation still running when the newest one ends", async () => {
+      const { streamer, editText } = createStreamer();
+
+      streamer.updateActivity("s1", "second");
+      streamer.addBackgroundOperation("s1", "call-1", "first");
+      streamer.addBackgroundOperation("s1", "call-2", "second");
+      await tick();
+      await streamer.finalize("s1");
+      await streamer.endBackgroundOperation("s1", "call-2");
+      await tick();
+
+      expect(editText).toHaveBeenLastCalledWith("s1", 10, "⏳ Working\nfirst");
+    });
+
+    it("leaves a parked card as it is once its operations are dropped", async () => {
+      const { streamer, editText } = createStreamer();
+
+      streamer.updateActivity("s1", "bash sleep 90");
+      streamer.addBackgroundOperation("s1", "call-bg", "bash sleep 90");
+      await tick();
+      await streamer.finalize("s1");
+      await tick();
+      const editsBefore = editText.mock.calls.length;
+      streamer.dropBackgroundOperations("s1");
+      streamer.updateBackgroundOperation("s1", "call-bg", "bash sleep 90 · 🕒 1m");
+      await streamer.endBackgroundOperation("s1", "call-bg");
+
+      expect(editText).toHaveBeenCalledTimes(editsBefore);
+    });
+
+    it("keeps parked cards when only the open card is discarded", async () => {
+      const { streamer, editText } = createStreamer();
+
+      streamer.updateActivity("s1", "bash sleep 90");
+      streamer.addBackgroundOperation("s1", "call-bg", "bash sleep 90");
+      await tick();
+      await streamer.finalize("s1");
+      streamer.updateActivity("s1", "next");
+      streamer.discardOpenCard("s1", "session_error");
+      await streamer.endBackgroundOperation("s1", "call-bg");
+
+      expect(editText).toHaveBeenLastCalledWith(
+        "s1",
+        10,
+        "✅ Finished Work\ntool calls: 1 · changed files: 0",
+      );
+    });
+  });
 });

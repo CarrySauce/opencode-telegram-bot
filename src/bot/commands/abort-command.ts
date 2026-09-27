@@ -14,7 +14,11 @@ type SessionState = "idle" | "busy" | "not-found";
 
 export type AbortCommandDeps = Pick<
   AppContainer,
-  "assistantRunState" | "attachManager" | "foregroundSessionState" | "resetInteractions"
+  | "assistantRunState"
+  | "attachManager"
+  | "foregroundSessionState"
+  | "resetInteractions"
+  | "stopBackgroundOperations"
 >;
 
 interface AbortCurrentOperationOptions {
@@ -97,6 +101,9 @@ export async function abortCurrentOperation(
       }
       return;
     }
+
+    // What ran in the background stays in the chat as it was at the abort.
+    deps.stopBackgroundOperations("abort_command", currentSession.id);
 
     let waitingMessageId: number | null = null;
     let chatId: number | null = null;

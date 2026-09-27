@@ -236,4 +236,155 @@ describe("opencode/v2/events", () => {
 
     expect(envelope?.payload).toMatchObject({ properties: { part: { tool: "unknown" } } });
   });
+
+  describe("background operations", () => {
+    const base = { sessionID: SESSION, assistantMessageID: MESSAGE, id: "call-bg" };
+
+    function toolStates(result: ReturnType<typeof payloads>) {
+      return result
+        .filter((item) => item.type === "message.part.updated")
+        .map((item) => (item.properties as { part: { state: Record<string, unknown> } }).part.state);
+    }
+
+    function launchShell(translate: ReturnType<typeof createV2EventTranslator>) {
+      return payloads(translate, [
+        event("session.tool.input.started", { ...base, name: "shell" }),
+        event("session.tool.called", {
+          ...base,
+          input: { command: "sleep 90", background: true },
+          executed: false,
+        }),
+        event("session.tool.success", {
+          ...base,
+          content: [{ type: "text", text: "Command moved to the background" }],
+          metadata: { shellID: "sh-1", status: "running" },
+          executed: false,
+        }),
+      ]);
+    }
+
+    it("keeps a background command running when V2 reports it done at launch", () => {
+      const translate = createV2EventTranslator();
+
+      const states = toolStates(launchShell(translate));
+
+      expect(states.map((state) => state.status)).toEqual(["pending", "running", "running"]);
+      expect(states[2]).toMatchObject({
+        input: { command: "sleep 90", background: true },
+        metadata: { shellID: "sh-1", status: "running" },
+      });
+    });
+
+    it("completes the background command when its shell exits", () => {
+      const translate = createV2EventTranslator();
+      launchShell(translate);
+
+      const result = payloads(translate, [
+        event("shell.exited", { id: "sh-other", exit: 0, status: "exited" }),
+        event("shell.exited", { id: "sh-1", exit: 0, status: "exited" }),
+        event("shell.exited", { id: "sh-1", exit: 0, status: "exited" }),
+      ]);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({
+        properties: {
+          part: {
+            callID: "call-bg",
+            tool: "bash",
+            sessionID: SESSION,
+            messageID: MESSAGE,
+            state: {
+              status: "completed",
+              output: "Command moved to the background",
+              metadata: { shellID: "sh-1", status: "exited", exit: 0 },
+              time: { start: 1000, end: 1000 },
+            },
+          },
+        },
+      });
+    });
+
+    it("leaves a command that finished before its success as an ordinary completion", () => {
+      const translate = createV2EventTranslator();
+
+      const result = payloads(translate, [
+        event("session.tool.input.started", { ...base, name: "shell" }),
+        event("session.tool.success", {
+          ...base,
+          content: [],
+          metadata: { shellID: "sh-1", status: "completed" },
+          executed: false,
+        }),
+      ]);
+
+      expect(toolStates(result).map((state) => state.status)).toEqual(["pending", "completed"]);
+    });
+
+    function launchSubagent(translate: ReturnType<typeof createV2EventTranslator>) {
+      return payloads(translate, [
+        event("session.tool.input.started", { ...base, name: "subagent" }),
+        event("session.tool.called", {
+          ...base,
+          input: { description: "Scan", agent: "general", background: true },
+          executed: false,
+        }),
+        event("session.tool.success", {
+          ...base,
+          content: [{ type: "text", text: "The subagent is working in the background" }],
+          metadata: { sessionID: "child-1", status: "running" },
+          executed: false,
+        }),
+      ]);
+    }
+
+    it("keeps a background subagent's task running and names its child session", () => {
+      const translate = createV2EventTranslator();
+
+      const states = toolStates(launchSubagent(translate));
+
+      expect(states[2]).toMatchObject({
+        status: "running",
+        input: { background: true },
+        metadata: { sessionID: "child-1", sessionId: "child-1" },
+      });
+    });
+
+    it("completes the parent's task after the child session ends", () => {
+      const translate = createV2EventTranslator();
+      launchSubagent(translate);
+
+      const result = payloads(translate, [
+        event("session.execution.succeeded", { sessionID: "child-1" }, false),
+      ]);
+
+      expect(result.map((item) => item.type)).toEqual([
+        "session.status",
+        "session.idle",
+        "message.part.updated",
+      ]);
+      expect(result[1]).toMatchObject({ properties: { sessionID: "child-1" } });
+      expect(result[2]).toMatchObject({
+        properties: {
+          part: { callID: "call-bg", tool: "task", sessionID: SESSION, state: { status: "completed" } },
+        },
+      });
+    });
+
+    it("fails the parent's task when the child session fails", () => {
+      const translate = createV2EventTranslator();
+      launchSubagent(translate);
+
+      const result = payloads(translate, [
+        event(
+          "session.execution.failed",
+          { sessionID: "child-1", error: { type: "unknown", message: "boom" } },
+          false,
+        ),
+      ]);
+
+      expect(result.at(-1)).toMatchObject({
+        properties: { part: { callID: "call-bg", state: { status: "error", error: "boom" } } },
+      });
+    });
+  });
 });

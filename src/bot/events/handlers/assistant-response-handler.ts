@@ -349,7 +349,7 @@ export function registerAssistantResponseHandlers(deps: AssistantResponseDeps): 
               ),
           },
           flushPendingServiceMessages: () => {
-            runtime.clearToolTracking(sessionId, "assistant_message_completed");
+            runtime.clearToolTracking(sessionId, "assistant_message_completed", true);
 
             return Promise.all([
               runtime.toolMessageBatcher.flushSession(sessionId, "assistant_message_completed"),
@@ -456,7 +456,7 @@ export function registerAssistantResponseHandlers(deps: AssistantResponseDeps): 
     }
 
     if (update.isFirstUpdate) {
-      runtime.clearToolTracking(update.sessionId, "thinking_started");
+      runtime.clearToolTracking(update.sessionId, "thinking_started", true);
       void runtime.toolCallStreamer
         .breakSession(update.sessionId, "thinking_started")
         .catch((error) => {

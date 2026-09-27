@@ -538,6 +538,118 @@ describe("summary/aggregator", () => {
       expect(card.currentToolStartedAt).toBeUndefined();
     });
 
+    function launchInBackground(): void {
+      summaryAggregator.processEvent({
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "root-task",
+            sessionID: "root-session",
+            messageID: "root-message",
+            type: "tool",
+            callID: "call-task",
+            tool: "task",
+            state: {
+              status: "running",
+              input: { description: "task description", background: true },
+              metadata: { sessionId: "child-session-1" },
+              time: { start: Date.now() },
+            },
+          },
+        },
+      } as unknown as Event);
+    }
+
+    function emitIdle(sessionID: string): void {
+      summaryAggregator.processEvent({
+        type: "session.idle",
+        properties: { sessionID },
+      } as unknown as Event);
+    }
+
+    it("keeps a background subagent's card after its parent's turn ends", () => {
+      const onSubagent = vi.fn();
+      summaryAggregator.setOnSubagent(onSubagent);
+      startSubagent();
+      launchInBackground();
+      emitIdle("root-session");
+
+      emitChildTool("call-1");
+      expect(onSubagent.mock.lastCall?.[1][0]).toMatchObject({
+        background: true,
+        status: "running",
+        currentToolCallId: "call-1",
+      });
+
+      emitIdle("child-session-1");
+      expect(onSubagent.mock.lastCall?.[1][0]).toMatchObject({
+        status: "completed",
+        finishedAt: expect.any(Number),
+      });
+    });
+
+    it("keeps a background card through an update of its session in a later run", () => {
+      const onSubagent = vi.fn();
+      summaryAggregator.setOnSubagent(onSubagent);
+      startSubagent();
+      launchInBackground();
+      emitIdle("root-session");
+      summaryAggregator.processEvent({
+        type: "message.updated",
+        properties: {
+          info: {
+            id: "user-message-next",
+            sessionID: "root-session",
+            role: "user",
+            time: { created: Date.now() + 1000 },
+          },
+        },
+      } as unknown as Event);
+      summaryAggregator.processEvent({
+        type: "session.updated",
+        properties: {
+          info: {
+            id: "child-session-1",
+            parentID: "root-session",
+            title: "task description (@explore subagent)",
+            slug: "child",
+            directory: "D:/repo",
+            projectID: "p1",
+            version: "1",
+            time: { created: 1, updated: Date.now() },
+          },
+        },
+      } as unknown as Event);
+
+      emitChildTool("call-2");
+      expect(onSubagent.mock.lastCall?.[1][0].currentToolCallId).toBe("call-2");
+    });
+
+    it("still retires a foreground subagent's card when the parent's turn ends", () => {
+      const onSubagent = vi.fn();
+      summaryAggregator.setOnSubagent(onSubagent);
+      startSubagent();
+      emitIdle("root-session");
+      const callsAfterIdle = onSubagent.mock.calls.length;
+
+      emitChildTool("call-1");
+      expect(onSubagent.mock.calls).toHaveLength(callsAfterIdle);
+    });
+
+    it("stops following a background subagent once it is retired", () => {
+      const onSubagent = vi.fn();
+      summaryAggregator.setOnSubagent(onSubagent);
+      startSubagent();
+      launchInBackground();
+      emitIdle("root-session");
+      summaryAggregator.retireBackgroundSubagents();
+      const callsAfterStop = onSubagent.mock.calls.length;
+
+      emitChildTool("call-1");
+      emitIdle("child-session-1");
+      expect(onSubagent.mock.calls).toHaveLength(callsAfterStop);
+    });
+
     it("re-emits and restarts timing for an identical tool with a new call id", async () => {
       const onSubagent = vi.fn();
       summaryAggregator.setOnSubagent(onSubagent);

@@ -11,6 +11,8 @@ interface CompactProgressState {
   latestText: string;
   toolCallIds: Set<string>;
   filePaths: Set<string>;
+  // Background operations started on this card, in start order, with their current text.
+  backgroundActivities: Map<string, string>;
   timer: ReturnType<typeof setTimeout> | null;
   task: Promise<boolean>;
   cancelled: boolean;
@@ -27,6 +29,8 @@ export interface CompactProgressStreamerOptions {
   sendText: (sessionId: string, text: string) => Promise<number>;
   editText: (sessionId: string, messageId: number, text: string) => Promise<void>;
   deleteText?: (sessionId: string, messageId: number) => Promise<void>;
+  /** A card kept open past its close for the background operations it still shows. */
+  onPark?: (sessionId: string, callIds: string[]) => void;
 }
 
 function getErrorMessage(error: unknown): string {
@@ -40,6 +44,7 @@ function createInitialState(sessionId: string): CompactProgressState {
     latestText: "",
     toolCallIds: new Set(),
     filePaths: new Set(),
+    backgroundActivities: new Map(),
     timer: null,
     task: Promise.resolve(true),
     cancelled: false,
@@ -51,16 +56,26 @@ export class CompactProgressStreamer {
   private readonly states = new Map<string, CompactProgressState>();
   private readonly heldBySession = new Map<string, HeldStretch>();
   private readonly finalizing = new Set<CompactProgressState>();
+  // Cards closed for their stretch that still show a running background operation.
+  private readonly parked = new Set<CompactProgressState>();
   private readonly throttleMs: StreamThrottleMs;
   private readonly sendText: CompactProgressStreamerOptions["sendText"];
   private readonly editText: CompactProgressStreamerOptions["editText"];
   private readonly deleteText: CompactProgressStreamerOptions["deleteText"];
+  private readonly onPark: CompactProgressStreamerOptions["onPark"];
 
-  constructor({ throttleMs, sendText, editText, deleteText }: CompactProgressStreamerOptions) {
+  constructor({
+    throttleMs,
+    sendText,
+    editText,
+    deleteText,
+    onPark,
+  }: CompactProgressStreamerOptions) {
     this.throttleMs = throttleMs;
     this.sendText = sendText;
     this.editText = editText;
     this.deleteText = deleteText;
+    this.onPark = onPark;
   }
 
   private resolveThrottleMs(sessionId: string): number {
@@ -153,22 +168,108 @@ export class CompactProgressStreamer {
     this.states.get(sessionId)?.filePaths.add(normalizedPath);
   }
 
+  /** Registers a background operation on the open card, or updates its text on its own card. */
+  addBackgroundOperation(sessionId: string, callId: string, activity: string): void {
+    if (!sessionId || !callId || !activity.trim()) {
+      return;
+    }
+
+    if (this.findBackgroundCard(sessionId, callId)) {
+      this.updateBackgroundOperation(sessionId, callId, activity);
+      return;
+    }
+
+    this.getOrCreateState(sessionId).backgroundActivities.set(callId, activity.trim());
+  }
+
+  updateBackgroundOperation(sessionId: string, callId: string, activity: string): void {
+    const state = this.findBackgroundCard(sessionId, callId);
+    if (!state || !activity.trim()) {
+      return;
+    }
+
+    state.backgroundActivities.set(callId, activity.trim());
+    if (this.parked.has(state)) {
+      this.showNewestBackgroundOperation(state);
+    }
+  }
+
+  /** Counts the ended operation on its own card and closes a parked card left with none. */
+  async endBackgroundOperation(
+    sessionId: string,
+    callId: string,
+    deleteOnFinish = false,
+  ): Promise<void> {
+    const state = this.findBackgroundCard(sessionId, callId);
+    if (!state) {
+      return;
+    }
+
+    state.backgroundActivities.delete(callId);
+    state.toolCallIds.add(callId);
+    if (!this.parked.has(state)) {
+      return;
+    }
+
+    if (state.backgroundActivities.size > 0) {
+      this.showNewestBackgroundOperation(state);
+      return;
+    }
+
+    this.parked.delete(state);
+    this.clearTimer(state);
+    this.finalizing.add(state);
+    await this.closeState(state, deleteOnFinish);
+  }
+
+  /** Forgets background operations of a session (or all); their cards stay as they are. */
+  dropBackgroundOperations(sessionId?: string): void {
+    for (const state of this.states.values()) {
+      if (sessionId === undefined || state.sessionId === sessionId) {
+        state.backgroundActivities.clear();
+      }
+    }
+    this.cancelParked(sessionId);
+  }
+
   async finalize(sessionId: string, deleteOnFinish = false): Promise<void> {
     const state = this.states.get(sessionId);
     if (state) {
       this.clearTimer(state);
       this.states.delete(sessionId);
-      this.finalizing.add(state);
+      if (state.backgroundActivities.size > 0) {
+        this.parked.add(state);
+      } else {
+        this.finalizing.add(state);
+      }
     }
 
     const held = this.heldBySession.get(sessionId);
     this.heldBySession.delete(sessionId);
+    const parked = state && this.parked.has(state) ? state : undefined;
+    if (parked) {
+      this.onPark?.(sessionId, Array.from(parked.backgroundActivities.keys()));
+      // A timer tick of a background operation held during the close belongs to the
+      // parked card, not to the next stretch.
+      if (held?.activity && Array.from(parked.backgroundActivities.values()).includes(held.activity)) {
+        held.activity = null;
+      }
+    }
     this.replayHeld(sessionId, held);
 
     if (!state) {
       return;
     }
 
+    if (parked) {
+      this.showNewestBackgroundOperation(parked);
+      return;
+    }
+
+    await this.closeState(state, deleteOnFinish);
+  }
+
+  private async closeState(state: CompactProgressState, deleteOnFinish: boolean): Promise<void> {
     try {
       await state.task.catch(() => false);
 
@@ -210,6 +311,23 @@ export class CompactProgressStreamer {
   }
 
   clearSession(sessionId: string, reason: string): void {
+    const cancelledParked = this.cancelParked(sessionId);
+    const cleared = this.clearOpenCard(sessionId);
+    if (!cleared && !cancelledParked) {
+      return;
+    }
+
+    logger.debug(`[CompactProgress] Cleared session: session=${sessionId}, reason=${reason}`);
+  }
+
+  /** Drops the open card only; parked cards keep showing their background operations. */
+  discardOpenCard(sessionId: string, reason: string): void {
+    if (this.clearOpenCard(sessionId)) {
+      logger.debug(`[CompactProgress] Discarded open card: session=${sessionId}, reason=${reason}`);
+    }
+  }
+
+  private clearOpenCard(sessionId: string): boolean {
     this.heldBySession.delete(sessionId);
     const state = this.states.get(sessionId);
     if (state) {
@@ -219,11 +337,7 @@ export class CompactProgressStreamer {
     }
 
     const cancelledFinalizing = this.cancelFinalizing(sessionId);
-    if (!state && !cancelledFinalizing) {
-      return;
-    }
-
-    logger.debug(`[CompactProgress] Cleared session: session=${sessionId}, reason=${reason}`);
+    return Boolean(state) || cancelledFinalizing;
   }
 
   clearAll(reason: string): void {
@@ -234,7 +348,50 @@ export class CompactProgressStreamer {
     }
     this.states.clear();
     this.cancelFinalizing();
+    this.cancelParked();
     logger.debug(`[CompactProgress] Cleared all sessions: reason=${reason}`);
+  }
+
+  private findBackgroundCard(sessionId: string, callId: string): CompactProgressState | undefined {
+    const open = this.states.get(sessionId);
+    if (open?.backgroundActivities.has(callId)) {
+      return open;
+    }
+
+    for (const state of this.parked) {
+      if (state.sessionId === sessionId && state.backgroundActivities.has(callId)) {
+        return state;
+      }
+    }
+
+    return undefined;
+  }
+
+  /** A parked card shows the most recently started background operation still running. */
+  private showNewestBackgroundOperation(state: CompactProgressState): void {
+    const activity = Array.from(state.backgroundActivities.values()).pop();
+    if (!activity) {
+      return;
+    }
+
+    state.latestText = t("progress.compact.activity", {
+      header: t("progress.compact.working_header"),
+      activity,
+    });
+    this.ensureTimer(state);
+  }
+
+  private cancelParked(sessionId?: string): boolean {
+    let cancelled = false;
+    for (const state of Array.from(this.parked)) {
+      if (sessionId === undefined || state.sessionId === sessionId) {
+        this.clearTimer(state);
+        this.cancelState(state);
+        this.parked.delete(state);
+        cancelled = true;
+      }
+    }
+    return cancelled;
   }
 
   private replayHeld(sessionId: string, held: HeldStretch | undefined): void {

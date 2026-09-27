@@ -180,6 +180,51 @@ describe("bot/streaming/running-tool-tracker", () => {
     expect(ticks.map((tick) => tick.callId)).toEqual(["call-2"]);
   });
 
+  it("keeps a background call ticking through a turn-level clear", async () => {
+    vi.useFakeTimers();
+    const { tracker, ticks } = createTracker();
+
+    tracker.track("s1", "call-fg");
+    tracker.track("s1", "call-bg", true);
+    tracker.clearSession("s1", "test", true);
+
+    await vi.advanceTimersByTimeAsync(20 * SECOND);
+
+    expect(ticks.map((tick) => tick.callId)).toEqual(["call-bg"]);
+    expect(tracker.backgroundCallIds("s1")).toEqual(["call-bg"]);
+  });
+
+  it("drops a background call on a full session clear", () => {
+    const { tracker } = createTracker();
+
+    tracker.track("s1", "call-bg", true);
+    tracker.clearSession("s1", "test");
+
+    expect(tracker.backgroundCallIds()).toEqual([]);
+  });
+
+  it("learns that a call is background from a later running update", () => {
+    const { tracker } = createTracker();
+
+    tracker.track("s1", "call-1");
+    tracker.track("s1", "call-1", true);
+
+    expect(tracker.isBackground("call-1")).toBe(true);
+  });
+
+  it("leaves a detached call out of what the session runs now but keeps it ticking", async () => {
+    vi.useFakeTimers();
+    const { tracker, ticks } = createTracker();
+
+    tracker.track("s1", "call-bg", true);
+    tracker.detach(["call-bg"]);
+
+    expect(tracker.newestCallId("s1")).toBeUndefined();
+    expect(tracker.isDetached("call-bg")).toBe(true);
+    await vi.advanceTimersByTimeAsync(20 * SECOND);
+    expect(ticks.map((tick) => tick.callId)).toEqual(["call-bg"]);
+  });
+
   it("returns undefined from newestCallId when the session has no calls", () => {
     const { tracker } = createTracker();
 

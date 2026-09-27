@@ -141,6 +141,8 @@ export interface SubagentInfo {
   currentToolCallId?: string | undefined;
   currentToolStartedAt?: number | undefined;
   terminalMessage?: string | undefined;
+  /** Launched in the background: the card outlives its parent's turn. */
+  background?: boolean | undefined;
   createdAt: number;
   finishedAt?: number | undefined;
   updatedAt: number;
@@ -748,10 +750,40 @@ export class SummaryAggregator {
     this.lastSubagentSnapshot = "";
   }
 
-  private retireAllSubagents(): void {
+  private isRunningBackgroundSubagent(cardId: string): boolean {
+    const state = this.subagentStates.get(cardId);
+    return Boolean(
+      state?.background && (state.status === "pending" || state.status === "running"),
+    );
+  }
+
+  /** A turn boundary: a background subagent still running keeps its card and its events. */
+  private retireForegroundSubagents(): void {
     for (const cardId of [...this.subagentOrder]) {
-      this.retireSubagent(cardId);
+      if (!this.isRunningBackgroundSubagent(cardId)) {
+        this.retireSubagent(cardId);
+      }
     }
+  }
+
+  /** Stops following background subagents; their cards stay as they were. */
+  retireBackgroundSubagents(): void {
+    for (const cardId of [...this.subagentOrder]) {
+      if (this.isRunningBackgroundSubagent(cardId)) {
+        this.retireSubagent(cardId);
+      }
+    }
+  }
+
+  private markBackgroundSubagent(childSessionId: string): void {
+    const cardId = this.subagentCardIdBySessionId.get(childSessionId);
+    const state = cardId ? this.subagentStates.get(cardId) : undefined;
+    if (!state || state.background) {
+      return;
+    }
+
+    state.background = true;
+    this.emitSubagentState();
   }
 
   private emitSubagentState(): void {
@@ -782,6 +814,7 @@ export class SummaryAggregator {
         currentToolCallId: state.currentToolCallId,
         currentToolStartedAt: state.currentToolStartedAt,
         terminalMessage: state.terminalMessage,
+        background: state.background,
         createdAt: state.createdAt,
         finishedAt: state.finishedAt,
         updatedAt: state.updatedAt,
@@ -808,6 +841,7 @@ export class SummaryAggregator {
         currentToolCallId: subagent.currentToolCallId,
         currentToolStartedAt: subagent.currentToolStartedAt,
         terminalMessage: subagent.terminalMessage,
+        background: subagent.background,
         finishedAt: subagent.finishedAt,
       })),
     );
@@ -1060,12 +1094,15 @@ export class SummaryAggregator {
       return;
     }
 
+    // A background subagent's card outlives the run that started it, so an update of
+    // its session arriving in a later run is not a stale discovery.
     const createdAt = info.time?.created;
     if (
-      !this.acceptsSubagentEvents ||
-      (this.subagentRunStartedAt > 0 &&
-        typeof createdAt === "number" &&
-        createdAt < this.subagentRunStartedAt)
+      !this.subagentCardIdBySessionId.has(info.id) &&
+      (!this.acceptsSubagentEvents ||
+        (this.subagentRunStartedAt > 0 &&
+          typeof createdAt === "number" &&
+          createdAt < this.subagentRunStartedAt))
     ) {
       this.finishedSubagentSessionIds.add(info.id);
       return;
@@ -1529,6 +1566,17 @@ export class SummaryAggregator {
 
       if (part.tool === "task") {
         this.updateSubagentFromTaskTool(part.sessionID, input);
+
+        const childSessionId =
+          "metadata" in state && state.metadata ? state.metadata.sessionId : undefined;
+        if (
+          "status" in state &&
+          state.status === "running" &&
+          input?.background === true &&
+          typeof childSessionId === "string"
+        ) {
+          this.markBackgroundSubagent(childSessionId);
+        }
       }
 
       logger.debug(
@@ -2201,7 +2249,7 @@ export class SummaryAggregator {
 
     logger.info(`[Aggregator] Session became idle: ${sessionID}`);
     this.acceptsSubagentEvents = false;
-    this.retireAllSubagents();
+    this.retireForegroundSubagents();
 
     // Stop typing indicator when session goes idle
     this.stopTypingIndicator();
@@ -2264,7 +2312,7 @@ export class SummaryAggregator {
 
     logger.warn(`[Aggregator] Session error: ${sessionID}: ${message}`);
     this.acceptsSubagentEvents = false;
-    this.retireAllSubagents();
+    this.retireForegroundSubagents();
     this.stopTypingIndicator();
 
     if (this.onSessionErrorCallback) {

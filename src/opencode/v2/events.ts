@@ -35,6 +35,12 @@ interface ToolCallState {
   start: number;
 }
 
+/** A tool V2 reported done at launch while the operation it started keeps running. */
+interface BackgroundCallState extends ToolCallState {
+  callID: string;
+  output: string;
+}
+
 interface SessionState {
   directory?: string;
   projectID?: string;
@@ -56,6 +62,8 @@ export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) 
   const sessions = new Map<string, SessionState>();
   const messages = new Map<string, AssistantMessageState>();
   const tools = new Map<string, ToolCallState>();
+  // Keyed by what announces the real end: `shell:<shell id>` or `session:<child session id>`.
+  const backgroundCalls = new Map<string, BackgroundCallState>();
   const inbox = new Map<string, SessionInboxItem>();
 
   const rememberDirectory = (sessionID: string, directory: string | undefined) => {
@@ -139,8 +147,11 @@ export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) 
     properties: { sessionID: part.sessionID, part, time },
   });
 
-  const toolPart = (callID: string, state: ToolState): Part | null => {
-    const call = tools.get(callID);
+  const toolPart = (
+    callID: string,
+    state: ToolState,
+    call: ToolCallState | undefined = tools.get(callID),
+  ): Part | null => {
     if (!call) {
       return null;
     }
@@ -177,6 +188,43 @@ export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) 
     },
     { id: `${id}:idle`, type: "session.idle", properties: { sessionID } },
   ];
+
+  const backgroundKey = (metadata: Record<string, unknown>): string | null => {
+    if (typeof metadata.shellID === "string") {
+      return `shell:${metadata.shellID}`;
+    }
+    if (typeof metadata.sessionID === "string") {
+      return `session:${metadata.sessionID}`;
+    }
+    return null;
+  };
+
+  /** The completion V2 never sends for a background call, built when its operation ends. */
+  const endBackgroundCall = (
+    key: string,
+    created: number,
+    end: { error: string } | { metadata: Record<string, unknown> },
+  ): Event[] => {
+    const call = backgroundCalls.get(key);
+    if (!call) {
+      return [];
+    }
+    backgroundCalls.delete(key);
+    const time = { start: call.start, end: created };
+    const state: ToolState =
+      "error" in end
+        ? { status: "error", input: call.input, error: end.error, metadata: call.metadata, time }
+        : {
+            status: "completed",
+            input: call.input,
+            output: call.output,
+            title: "",
+            metadata: { ...call.metadata, ...end.metadata },
+            time,
+          };
+    const part = toolPart(call.callID, state, call);
+    return part ? [partUpdated(part, created)] : [];
+  };
 
   const translatePayload = (event: OpenCodeEvent): Event[] => {
     const created =
@@ -254,9 +302,13 @@ export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) 
           },
         ];
 
+      // A background subagent ends with its child session; its parent's task call ends there too.
       case "session.execution.succeeded":
       case "session.execution.interrupted":
-        return idleEvents(event.data.sessionID, event.id);
+        return [
+          ...idleEvents(event.data.sessionID, event.id),
+          ...endBackgroundCall(`session:${event.data.sessionID}`, created, { metadata: {} }),
+        ];
 
       case "session.execution.failed":
         return [
@@ -269,7 +321,18 @@ export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) 
             },
           },
           ...idleEvents(event.data.sessionID, event.id),
+          ...endBackgroundCall(`session:${event.data.sessionID}`, created, {
+            error: event.data.error.message,
+          }),
         ];
+
+      case "shell.exited":
+        return endBackgroundCall(`shell:${event.data.id}`, created, {
+          metadata: {
+            status: event.data.status,
+            ...(event.data.exit !== undefined ? { exit: event.data.exit } : {}),
+          },
+        });
 
       case "session.retry.scheduled":
         return [
@@ -488,15 +551,38 @@ export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) 
       case "session.tool.success": {
         const data = event.data;
         const call = ensureToolCall(data.sessionID, data.assistantMessageID, data.id, created);
-        const part = toolPart(data.id, {
-          status: "completed",
-          input: call.input,
-          output: toolContentText(data.content),
-          title: "",
-          metadata: { ...call.metadata, ...(data.metadata ?? {}) },
-          time: { start: call.start, end: created },
-        });
+        const metadata: Record<string, unknown> = { ...call.metadata, ...(data.metadata ?? {}) };
+        const output = toolContentText(data.content);
         tools.delete(data.id);
+
+        // V2 reports a background command or subagent done as soon as it is launched; it
+        // stays a running tool here until the operation itself ends.
+        const key = metadata.status === "running" ? backgroundKey(metadata) : null;
+        if (key) {
+          if (typeof metadata.sessionID === "string" && metadata.sessionId === undefined) {
+            metadata.sessionId = metadata.sessionID;
+          }
+          backgroundCalls.set(key, { ...call, metadata, callID: data.id, output });
+          const part = toolPart(
+            data.id,
+            { status: "running", input: call.input, metadata, time: { start: call.start } },
+            call,
+          );
+          return part ? [partUpdated(part, created)] : [];
+        }
+
+        const part = toolPart(
+          data.id,
+          {
+            status: "completed",
+            input: call.input,
+            output,
+            title: "",
+            metadata,
+            time: { start: call.start, end: created },
+          },
+          call,
+        );
         return part ? [partUpdated(part, created)] : [];
       }
 

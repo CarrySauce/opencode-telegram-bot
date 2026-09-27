@@ -116,6 +116,53 @@ describe("bot/events/session-runtime-state", () => {
     expect(runtime.takeCompletedToolDuration("session-2", "call-0")).toBe(1500);
   });
 
+  describe("background operations", () => {
+    function addBackground(sessionId: string): void {
+      runtime.runningToolTracker.track(sessionId, "call-bg", true);
+      runtime.setRunningToolInfo({ ...toolInfo(sessionId), callId: "call-bg" });
+      runtime.setSubagentSnapshot(sessionId, [
+        { cardId: "card-bg", background: true, status: "running" },
+        { cardId: "card-fg", status: "running" },
+      ] as never);
+    }
+
+    it("keeps them through a turn boundary and drops the rest of the turn", () => {
+      addBackground("session-1");
+
+      runtime.clearToolTracking("session-1", "test", true);
+
+      expect(runtime.runningToolTracker.backgroundCallIds("session-1")).toEqual(["call-bg"]);
+      expect(runtime.getRunningToolInfo("session-1", "call-bg")).toBeDefined();
+      expect(runtime.getRunningToolInfo("session-1", "call-1")).toBeUndefined();
+      expect(runtime.getSubagentSnapshot("session-1")?.map((card) => card.cardId)).toEqual([
+        "card-bg",
+      ]);
+    });
+
+    it("drops them on any other clear", () => {
+      addBackground("session-1");
+
+      runtime.clearToolTracking("session-1", "test");
+
+      expect(runtime.runningToolTracker.backgroundCallIds("session-1")).toEqual([]);
+      expect(runtime.getRunningToolInfo("session-1", "call-bg")).toBeUndefined();
+      expect(runtime.getSubagentSnapshot("session-1")).toBeUndefined();
+    });
+
+    it("stops them in one session and leaves the other session running", () => {
+      addBackground("session-1");
+      runtime.runningToolTracker.track("session-2", "call-bg-2", true);
+
+      runtime.stopBackgroundOperations("test", "session-1");
+
+      expect(runtime.runningToolTracker.backgroundCallIds()).toEqual(["call-bg-2"]);
+      expect(runtime.getRunningToolInfo("session-1", "call-bg")).toBeUndefined();
+      expect(runtime.getSubagentSnapshot("session-1")?.map((card) => card.cardId)).toEqual([
+        "card-fg",
+      ]);
+    });
+  });
+
   it("keeps a session's entries apart from a same-named call in another session", () => {
     runtime.deleteRunningToolInfo("session-1", "call-1");
 

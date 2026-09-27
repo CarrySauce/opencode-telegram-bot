@@ -25,6 +25,7 @@ export interface BotEventSubscriptionService {
   ensureEventSubscription(directory: string): Promise<void>;
   setTelegramContext(bot: Bot<Context> | null, chatId: number | null): void;
   clearRuntimeState(reason: string): void;
+  stopBackgroundOperations(reason: string, sessionId?: string): void;
   cleanup(reason: string): void;
 }
 
@@ -83,6 +84,11 @@ class EventSubscriptionService implements BotEventSubscriptionService {
     this.deps.assistantRunState.clearAll(reason);
   };
 
+  stopBackgroundOperations = (reason: string, sessionId?: string): void => {
+    this.deps.summaryAggregator.retireBackgroundSubagents();
+    this.runtime.stopBackgroundOperations(reason, sessionId);
+  };
+
   cleanup(reason: string): void {
     stopEventListening();
     this.deps.summaryAggregator.clear();
@@ -134,6 +140,10 @@ class EventSubscriptionService implements BotEventSubscriptionService {
   };
 
   private restoreAfterReconnect(): void {
+    // The new stream no longer knows the background operations the old one announced,
+    // so their end would never arrive.
+    this.stopBackgroundOperations("event_stream_reconnect");
+
     const bot = this.botInstance;
     const chatId = this.chatIdInstance;
     if (!bot || !chatId) {
