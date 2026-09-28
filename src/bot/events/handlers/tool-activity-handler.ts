@@ -24,6 +24,7 @@ import {
   type CompactActivity,
   type SessionRuntimeState,
 } from "../session-runtime-state.js";
+import { closeCompactCardBeforeNextActivity } from "./assistant-response-handler.js";
 import {
   SUBAGENT_STREAM_PREFIX,
   isCompactProgressMode,
@@ -289,6 +290,10 @@ export function registerToolActivityHandlers(deps: ToolActivityDeps): void {
     const backgroundTracked = background && runtime.runningToolTracker.isBackground(callId);
     const backgroundDetached = background && runtime.runningToolTracker.isDetached(callId);
 
+    if (compactMode && !isTerminal && !runtime.getRunningToolInfo(sessionId, callId)) {
+      closeCompactCardBeforeNextActivity(runtime, sessionId);
+    }
+
     if (isTerminal) {
       if (tracksElapsed) {
         // Released here rather than in the tool callback: that callback returns
@@ -463,6 +468,7 @@ export function registerToolActivityHandlers(deps: ToolActivityDeps): void {
     }
 
     try {
+      await runtime.letOutRepliesBeforeDocument(fileInfo.sessionId);
       runtime.takeCompletedToolDuration(fileInfo.sessionId, fileInfo.callId);
       runtime.toolCallStreamer.removeByPrefix(
         fileInfo.sessionId,

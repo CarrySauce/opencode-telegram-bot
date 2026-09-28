@@ -135,4 +135,42 @@ describe("summary/tool-message-batcher", () => {
       expect(sendOrder).toEqual(["text:first", "file:edit_d.ts.txt", "text:second"]);
     });
   });
+
+  it("waits for the gate a text message was queued with", async () => {
+    const sendText = vi.fn().mockResolvedValue(undefined);
+    const gate = createDeferred();
+    const takeTextGate = vi
+      .fn()
+      .mockReturnValueOnce(() => gate.promise)
+      .mockReturnValue(undefined);
+    const batcher = new ToolMessageBatcher({
+      sendText,
+      sendFile: vi.fn().mockResolvedValue(undefined),
+      takeTextGate,
+    });
+
+    batcher.sendTextNow("s1", "gated", "test");
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(sendText).not.toHaveBeenCalled();
+
+    gate.resolve();
+    await batcher.flushSession("s1", "test");
+    expect(sendText).toHaveBeenCalledWith("s1", "gated");
+  });
+
+  it("never gates a file", async () => {
+    const sendFile = vi.fn().mockResolvedValue(undefined);
+    const takeTextGate = vi.fn(() => () => new Promise<void>(() => {}));
+    const batcher = new ToolMessageBatcher({
+      sendText: vi.fn().mockResolvedValue(undefined),
+      sendFile,
+      takeTextGate,
+    });
+
+    batcher.enqueueFile("s1", createFileData("file.ts"));
+    await batcher.flushSession("s1", "test");
+
+    expect(sendFile).toHaveBeenCalledTimes(1);
+    expect(takeTextGate).not.toHaveBeenCalled();
+  });
 });

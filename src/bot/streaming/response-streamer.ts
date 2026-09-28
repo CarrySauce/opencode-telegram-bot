@@ -293,6 +293,25 @@ export class ResponseStreamer {
     return { streamed: synced, telegramMessageIds: messageIds };
   }
 
+  /**
+   * Sends a stream that has nothing on screen yet right away instead of waiting
+   * for its timer. A stream already shown, broken or cancelled is left alone.
+   */
+  async flushPending(sessionId: string, messageId: string): Promise<void> {
+    const state = this.states.get(buildStateKey(sessionId, messageId));
+    if (!state || state.cancelled || state.isBroken || state.telegramMessageIds.length > 0) {
+      return;
+    }
+
+    this.clearTimer(state);
+    await this.enqueueTask(state, () => this.flushState(state, "flush_pending")).catch((error) => {
+      logger.error(
+        `[ResponseStreamer] Pending stream flush failed: session=${sessionId}, message=${messageId}`,
+        error,
+      );
+    });
+  }
+
   clearMessage(sessionId: string, messageId: string, reason: string): void {
     const key = buildStateKey(sessionId, messageId);
     const state = this.states.get(key);

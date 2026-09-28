@@ -292,4 +292,59 @@ describe("bot/events/session-runtime-state text sent early", () => {
       "Analysis",
     );
   });
+
+  describe("reply gate", () => {
+    it("lets out only the replies begun when the gate was taken, after the cut", async () => {
+      vi.useRealTimers();
+      streamingMode.value = "edit";
+      const api = {
+        sendMessage: vi.fn().mockResolvedValue({ message_id: 10 }),
+        sendRichMessage: vi
+          .fn()
+          .mockRejectedValue(Object.assign(new Error("Bad Request: rich"), { error_code: 400 })),
+        editMessageText: vi.fn().mockResolvedValue(undefined),
+        deleteMessage: vi.fn().mockResolvedValue(true),
+      };
+      const policy = {
+        getDestination: () => ({ api, chatId: 42 }),
+        isForegroundSession: () => true,
+      } as unknown as SessionTargetPolicy;
+      const runtime = new SessionRuntimeState({ policy, getReplyKeyboard: () => undefined });
+      let releaseOlderLine: () => void = () => {};
+      api.sendMessage.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            releaseOlderLine = () => resolve({ message_id: 9 });
+          }),
+      );
+
+      runtime.toolCallStreamer.append("session-1", "older tool line");
+      runtime.enqueueAssistantResponse("session-1", "reply-1", {
+        parts: [{ blocks: [], fallbackText: "first reply", source: "plain" }],
+      });
+      runtime.markReplyBegun("session-1", "reply-1");
+      runtime.startReplyCut("session-1");
+      const gate = runtime.takeReplyGate("session-1");
+
+      runtime.enqueueAssistantResponse("session-1", "reply-2", {
+        parts: [{ blocks: [], fallbackText: "second reply", source: "plain" }],
+      });
+      runtime.markReplyBegun("session-1", "reply-2");
+      const letOut = gate?.();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(api.sendMessage).toHaveBeenCalledTimes(1);
+
+      releaseOlderLine();
+      await letOut;
+
+      const sentTexts = api.sendMessage.mock.calls.map((call) => String(call[1]));
+      expect(sentTexts).toEqual(["older tool line", "first reply"]);
+      runtime.clearAllOutput("test_cleanup");
+    });
+
+    it("has no gate while no reply has begun", () => {
+      const runtime = createRuntime();
+      expect(runtime.takeReplyGate("session-1")).toBeUndefined();
+    });
+  });
 });

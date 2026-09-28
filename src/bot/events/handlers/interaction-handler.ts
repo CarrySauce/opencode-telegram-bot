@@ -45,6 +45,7 @@ async function presentQuestion(
     runtime.toolCallStreamer.flushSession(sessionId, "question_asked"),
   ]);
   await keepAssistantDraftsBeforePrompt(deps, sessionId);
+  await runtime.letOutReplies(sessionId);
 
   // Decide and open the slot in one synchronous step: a permission or a
   // reset may have landed during the flushes.
@@ -118,6 +119,7 @@ async function presentPermission(
     runtime.toolCallStreamer.flushSession(sessionId, "permission_asked"),
   ]);
   await keepAssistantDraftsBeforePrompt(deps, followedSessionId);
+  await runtime.letOutReplies(followedSessionId);
 
   // Decide in one synchronous step: a poll or a reset may have landed during the flushes.
   if (permissionManager.getDropReason(request, generation)) {

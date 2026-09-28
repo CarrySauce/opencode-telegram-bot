@@ -879,4 +879,65 @@ describe("bot/streaming/response-streamer", () => {
     expect(editPart).toHaveBeenCalledTimes(1);
     expect(editPart).toHaveBeenCalledWith(1, plainPart("second"), undefined, "s1");
   });
+
+  describe("flushPending", () => {
+    function createStreamer() {
+      let nextMessageId = 1;
+      const sendPart = vi.fn(async (part: TelegramRenderedPart) => ({
+        messageId: nextMessageId++,
+        deliveredSignature: signature(part),
+      }));
+      const editPart = vi.fn(async (_messageId: number, part: TelegramRenderedPart) => ({
+        deliveredSignature: signature(part),
+      }));
+      const streamer = new ResponseStreamer({
+        throttleMs: 5000,
+        sendPart,
+        editPart,
+        deleteText: vi.fn().mockResolvedValue(undefined),
+      });
+      return { streamer, sendPart, editPart };
+    }
+
+    it("sends a stream with nothing on screen yet without waiting for its timer", async () => {
+      vi.useFakeTimers();
+      const { streamer, sendPart } = createStreamer();
+
+      streamer.enqueue("s1", "m1", { parts: [plainPart("reply")] });
+      await streamer.flushPending("s1", "m1");
+
+      expect(sendPart).toHaveBeenCalledTimes(1);
+      expect(sendPart).toHaveBeenCalledWith(plainPart("reply"), undefined, "s1");
+
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(sendPart).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves a stream already on screen to its timer", async () => {
+      vi.useFakeTimers();
+      const { streamer, sendPart, editPart } = createStreamer();
+
+      streamer.enqueue("s1", "m1", { parts: [plainPart("reply")] });
+      await vi.advanceTimersByTimeAsync(5000);
+      streamer.enqueue("s1", "m1", { parts: [plainPart("reply grows")] });
+      await streamer.flushPending("s1", "m1");
+
+      expect(sendPart).toHaveBeenCalledTimes(1);
+      expect(editPart).not.toHaveBeenCalled();
+    });
+
+    it("does nothing for another reply or a broken stream", async () => {
+      vi.useFakeTimers();
+      const { streamer, sendPart } = createStreamer();
+      sendPart.mockRejectedValueOnce(new Error("Bad Request: chat not found"));
+
+      streamer.enqueue("s1", "m1", { parts: [plainPart("reply")] });
+      await streamer.flushPending("s1", "m2");
+      expect(sendPart).not.toHaveBeenCalled();
+
+      await streamer.flushPending("s1", "m1");
+      await streamer.flushPending("s1", "m1");
+      expect(sendPart).toHaveBeenCalledTimes(1);
+    });
+  });
 });

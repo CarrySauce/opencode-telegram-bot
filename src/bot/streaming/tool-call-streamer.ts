@@ -14,7 +14,11 @@ interface ToolCallStreamerOptions {
   sendText: (sessionId: string, text: string) => Promise<number>;
   editText: (sessionId: string, telegramMessageId: number, text: string) => Promise<void>;
   deleteText: (sessionId: string, telegramMessageId: number) => Promise<void>;
+  /** Asked when a stream starts: what its first new message has to wait for, if anything. */
+  takeGate?: (sessionId: string) => ToolStreamGate | undefined;
 }
+
+export type ToolStreamGate = () => Promise<void>;
 
 interface StreamEntry {
   prefix?: string;
@@ -37,6 +41,7 @@ interface StreamState {
   fatalErrorLogged: boolean;
   deleteWhenEmpty: boolean;
   held: boolean;
+  gate: ToolStreamGate | undefined;
 }
 
 function getErrorMessage(error: unknown): string {
@@ -120,6 +125,7 @@ export class ToolCallStreamer {
   private readonly sendText: ToolCallStreamerOptions["sendText"];
   private readonly editText: ToolCallStreamerOptions["editText"];
   private readonly deleteText: ToolCallStreamerOptions["deleteText"];
+  private readonly takeGate: ToolCallStreamerOptions["takeGate"];
   private readonly states: Map<string, StreamState> = new Map();
   private readonly allStates: Set<StreamState> = new Set();
   private readonly telegramOperationTasks = new Map<string, Promise<void>>();
@@ -136,6 +142,7 @@ export class ToolCallStreamer {
     this.sendText = options.sendText;
     this.editText = options.editText;
     this.deleteText = options.deleteText;
+    this.takeGate = options.takeGate;
   }
 
   private resolveThrottleMs(sessionId: string): number {
@@ -296,9 +303,12 @@ export class ToolCallStreamer {
         }
       }
     }
+    // All at once: an update landing while an earlier state syncs must not join a later one.
     for (const state of states) {
       state.isBreaking = true;
       this.clearTimer(state);
+    }
+    for (const state of states) {
       if (state.held) {
         await this.documentBoundaries.get(sessionId)?.done;
       }
@@ -311,6 +321,16 @@ export class ToolCallStreamer {
       this.removeState(state);
     }
     logger.debug(`[ToolCallStreamer] Broke session stream: session=${sessionId}, reason=${reason}`);
+  }
+
+  /** Whether a session has output waiting for a new message of its own. */
+  hasUnsentMessages(sessionId: string): boolean {
+    return this.getStatesForSession(sessionId).some(
+      (state) =>
+        !state.cancelled &&
+        !state.isBroken &&
+        state.latestParts.length > state.telegramMessageIds.length,
+    );
   }
 
   clearSession(sessionId: string, reason: string): void {
@@ -443,6 +463,7 @@ export class ToolCallStreamer {
       fatalErrorLogged: false,
       deleteWhenEmpty: false,
       held: this.heldSessions.has(sessionId),
+      gate: this.takeGate?.(sessionId),
     };
 
     this.states.set(stateId, state);
@@ -666,6 +687,14 @@ export class ToolCallStreamer {
         );
         state.lastSentParts[index] = text;
         continue;
+      }
+
+      // A break is its caller's own ordering point, so only a stream outside one waits.
+      if (state.gate && !state.isBreaking) {
+        await state.gate();
+        if (state.cancelled) {
+          return;
+        }
       }
 
       const messageId = await this.enqueueTelegramOperation(state.sessionId, () =>

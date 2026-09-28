@@ -242,16 +242,67 @@ function enqueueAssistantReply(
   }
 
   if (streamer.hasPendingSend(sessionId)) {
-    void streamer.flushPending(sessionId).then(() => {
+    const deferral = streamer.flushPending(sessionId).then(() => {
       if (runtime.isAssistantCompletionStarted(sessionId, messageId)) {
         return;
       }
       enqueue();
     });
+    runtime.setReplyEnqueueDeferral(sessionId, deferral);
     return;
   }
 
   enqueue();
+}
+
+/**
+ * The first text of an `edit` reply divides what the agent did before it from what
+ * it does next: the latter goes below the reply.
+ */
+function beginEditReply(runtime: SessionRuntimeState, sessionId: string, messageId: string): void {
+  if (
+    runtime.getAssistantStreamMode(sessionId, messageId) !== "edit" ||
+    runtime.isReplyBegun(sessionId, messageId)
+  ) {
+    return;
+  }
+
+  runtime.markReplyBegun(sessionId, messageId);
+  if (isCompactProgressMode()) {
+    runtime.markCompactCloseDue(sessionId, messageId);
+  } else {
+    runtime.startReplyCut(sessionId);
+  }
+}
+
+/**
+ * Compact mode: the first activity after a reply's text closes the card above the
+ * reply, once the reply is out, and opens a new card below it.
+ */
+export function closeCompactCardBeforeNextActivity(
+  runtime: SessionRuntimeState,
+  sessionId: string,
+): void {
+  const streamer = runtime.compactProgressStreamer;
+  // A close already under way replays this activity into the next card itself.
+  if (streamer.isHolding(sessionId) || runtime.takeCompactCloseDue(sessionId) === undefined) {
+    return;
+  }
+
+  const letOutReply = runtime.takeReplyGate(sessionId);
+  streamer.holdForClose(sessionId);
+  void runtime.enqueueCompletionTask(sessionId, async () => {
+    try {
+      await letOutReply?.();
+      await streamer.finalize(sessionId, getDeleteCompactProgressOnFinish());
+    } catch (error) {
+      streamer.releaseHold(sessionId);
+      logger.error(
+        `[Bot] Failed to close the progress card after a reply: session=${sessionId}`,
+        error,
+      );
+    }
+  });
 }
 
 /** Streamed replies, their completion, thinking and external user input. */
@@ -278,17 +329,23 @@ export function registerAssistantResponseHandlers(deps: AssistantResponseDeps): 
     preparedStreamPayload.sendOptions = { disable_notification: true };
     preparedStreamPayload.editOptions = undefined;
 
+    beginEditReply(runtime, sessionId, messageId);
     enqueueAssistantReply(runtime, sessionId, messageId, preparedStreamPayload);
   });
 
   summaryAggregator.setOnComplete((sessionId, messageId, messageText, completionInfo) => {
+    // Its card closed when the next activity came: the open card is below this reply.
+    const compactCardClosed = runtime.takeCompactClosedForReply(sessionId, messageId);
     if (
       isCompactProgressMode() &&
       policy.getDestination(sessionId) &&
       policy.isForegroundSession(sessionId)
     ) {
       runtime.markAssistantCompletionStarted(sessionId, messageId);
-      if (runtime.stripDeliveredAssistantText(sessionId, messageId, messageText).trim()) {
+      if (
+        !compactCardClosed &&
+        runtime.stripDeliveredAssistantText(sessionId, messageId, messageText).trim()
+      ) {
         runtime.compactProgressStreamer.holdForClose(sessionId);
       }
     }
@@ -335,8 +392,22 @@ export function registerAssistantResponseHandlers(deps: AssistantResponseDeps): 
 
         const assistantResponseMode = runtime.getAssistantStreamMode(sessionId, messageId);
 
-        const remainingText = runtime.stripDeliveredAssistantText(sessionId, messageId, messageText);
-        if (isCompactProgressMode() && remainingText.trim()) {
+        // Tool output that started after this reply's text waits below it.
+        if (
+          assistantResponseMode === "edit" &&
+          runtime.toolCallStreamer.hasUnsentMessages(sessionId)
+        ) {
+          await runtime.letOutReplies(sessionId);
+        }
+
+        const remainingText = runtime.stripDeliveredAssistantText(
+          sessionId,
+          messageId,
+          messageText,
+        );
+        const closesCompactCard =
+          isCompactProgressMode() && !compactCardClosed && Boolean(remainingText.trim());
+        if (closesCompactCard) {
           await runtime.compactProgressStreamer.flushPending(sessionId);
         }
 
@@ -375,12 +446,12 @@ export function registerAssistantResponseHandlers(deps: AssistantResponseDeps): 
           },
         });
 
-        if (isCompactProgressMode() && remainingText.trim()) {
+        if (closesCompactCard) {
           await runtime.compactProgressStreamer.finalize(
             sessionId,
             getDeleteCompactProgressOnFinish(),
           );
-        } else if (runtime.compactProgressStreamer.isHolding(sessionId)) {
+        } else if (!compactCardClosed && runtime.compactProgressStreamer.isHolding(sessionId)) {
           runtime.compactProgressStreamer.releaseHold(sessionId);
         }
 
@@ -451,6 +522,7 @@ export function registerAssistantResponseHandlers(deps: AssistantResponseDeps): 
     });
 
     if (isCompactProgressMode()) {
+      closeCompactCardBeforeNextActivity(runtime, update.sessionId);
       if (!runtime.runningToolTracker.newestCallId(update.sessionId)) {
         runtime.compactProgressStreamer.updateThinking(update.sessionId);
       }

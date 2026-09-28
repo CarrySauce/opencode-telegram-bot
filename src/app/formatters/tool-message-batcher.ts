@@ -3,21 +3,26 @@ import { logger } from "../../utils/logger.js";
 
 type SendTextCallback = (sessionId: string, text: string) => Promise<void>;
 type SendFileCallback = (sessionId: string, fileData: CodeFileData) => Promise<void>;
+type TextGate = () => Promise<void>;
 
 interface ToolMessageBatcherOptions {
   sendText: SendTextCallback;
   sendFile: SendFileCallback;
+  /** Asked when a text message is queued: what its send has to wait for, if anything. */
+  takeTextGate?: (sessionId: string) => TextGate | undefined;
 }
 
 export class ToolMessageBatcher {
   private readonly sendText: SendTextCallback;
   private readonly sendFile: SendFileCallback;
+  private readonly takeTextGate: ToolMessageBatcherOptions["takeTextGate"];
   private readonly sessionTasks: Map<string, Promise<void>> = new Map();
   private generation = 0;
 
   constructor(options: ToolMessageBatcherOptions) {
     this.sendText = options.sendText;
     this.sendFile = options.sendFile;
+    this.takeTextGate = options.takeTextGate;
   }
 
   enqueue(sessionId: string, message: string): void {
@@ -31,10 +36,12 @@ export class ToolMessageBatcher {
     }
 
     const expectedGeneration = this.generation;
+    const gate = this.takeTextGate?.(sessionId);
     logger.debug(`[ToolBatcher] Sending text message: session=${sessionId}, reason=${reason}`);
-    void this.enqueueTask(sessionId, () =>
-      this.sendTextSafe(sessionId, normalizedMessage, reason, expectedGeneration),
-    );
+    void this.enqueueTask(sessionId, async () => {
+      await gate?.();
+      await this.sendTextSafe(sessionId, normalizedMessage, reason, expectedGeneration);
+    });
   }
 
   enqueueUniqueByPrefix(sessionId: string, message: string, prefix: string): void {

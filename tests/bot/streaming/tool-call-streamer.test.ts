@@ -775,4 +775,117 @@ describe("bot/streaming/tool-call-streamer", () => {
     expect(editText).toHaveBeenCalledTimes(1);
     expect(editText).toHaveBeenCalledWith("s1", 1, "first\n\nsecond");
   });
+
+  describe("gate", () => {
+    it("waits for its gate before opening a new message, not before editing it", async () => {
+      vi.useFakeTimers();
+      const sendText = vi.fn().mockResolvedValue(10);
+      const editText = vi.fn().mockResolvedValue(undefined);
+      let openGate: () => void = () => {};
+      const gate = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            openGate = resolve;
+          }),
+      );
+      const streamer = new ToolCallStreamer({
+        throttleMs: 100,
+        sendText,
+        editText,
+        deleteText: vi.fn().mockResolvedValue(undefined),
+        takeGate: () => gate,
+      });
+
+      streamer.append("s1", "first");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(gate).toHaveBeenCalledTimes(1);
+      expect(sendText).not.toHaveBeenCalled();
+
+      openGate();
+      await vi.waitFor(() => {
+        expect(sendText).toHaveBeenCalledWith("s1", "first");
+      });
+
+      gate.mockImplementation(() => new Promise<void>(() => {}));
+      streamer.append("s1", "second");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(editText).toHaveBeenCalledWith("s1", 10, "first\n\nsecond");
+      expect(gate).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not wait for its gate while the stream is broken", async () => {
+      vi.useFakeTimers();
+      const sendText = vi.fn().mockResolvedValue(10);
+      const gate = vi.fn(() => new Promise<void>(() => {}));
+      const streamer = new ToolCallStreamer({
+        throttleMs: 100,
+        sendText,
+        editText: vi.fn().mockResolvedValue(undefined),
+        deleteText: vi.fn().mockResolvedValue(undefined),
+        takeGate: () => gate,
+      });
+
+      streamer.append("s1", "line");
+      await streamer.breakSession("s1", "test_break");
+
+      expect(gate).not.toHaveBeenCalled();
+      expect(sendText).toHaveBeenCalledWith("s1", "line");
+    });
+
+    it("takes the gate when a stream starts", async () => {
+      vi.useFakeTimers();
+      const takeGate = vi.fn().mockReturnValue(undefined);
+      const streamer = new ToolCallStreamer({
+        throttleMs: 100,
+        sendText: vi.fn().mockResolvedValue(10),
+        editText: vi.fn().mockResolvedValue(undefined),
+        deleteText: vi.fn().mockResolvedValue(undefined),
+        takeGate,
+      });
+
+      streamer.append("s1", "first");
+      streamer.append("s1", "second");
+      expect(takeGate).toHaveBeenCalledTimes(1);
+      expect(streamer.hasUnsentMessages("s1")).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(streamer.hasUnsentMessages("s1")).toBe(false);
+    });
+
+    it("stops every stream of a session taking lines as soon as a break starts", async () => {
+      vi.useFakeTimers();
+      let releaseFirst: () => void = () => {};
+      const sendText = vi
+        .fn()
+        .mockImplementationOnce(
+          () =>
+            new Promise<number>((resolve) => {
+              releaseFirst = () => resolve(10);
+            }),
+        )
+        .mockResolvedValue(11);
+      const streamer = new ToolCallStreamer({
+        throttleMs: 100,
+        sendText,
+        editText: vi.fn().mockResolvedValue(undefined),
+        deleteText: vi.fn().mockResolvedValue(undefined),
+      });
+
+      streamer.append("s1", "default line");
+      streamer.append("s1", "todo line", "todo");
+      const broken = streamer.breakSession("s1", "test_break");
+      streamer.append("s1", "later todo line", "todo");
+      await vi.waitFor(() => {
+        expect(sendText).toHaveBeenCalledTimes(1);
+      });
+      releaseFirst();
+      await vi.advanceTimersByTimeAsync(1000);
+      await broken;
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const sentTexts = sendText.mock.calls.map((call) => call[1]);
+      expect(sentTexts).toContain("todo line");
+      expect(sentTexts).toContain("later todo line");
+    });
+  });
 });

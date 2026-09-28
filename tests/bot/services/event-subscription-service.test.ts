@@ -2217,4 +2217,276 @@ describe("bot/services/event-subscription-service", () => {
     );
     expect(hasText(waitingPermissionText)).toBe(false);
   });
+
+  describe("a reply above what the agent did after it", () => {
+    function sentMessageTexts(api: FakeBotApi): string[] {
+      return api.sendMessage.mock.calls.map((call) => String(call[1]));
+    }
+
+    function indexOfSent(api: FakeBotApi, fragment: string): number {
+      return sentMessageTexts(api).findIndex((text) => text.includes(fragment));
+    }
+
+    function expectSentInOrder(api: FakeBotApi, fragments: string[]): void {
+      const indexes = fragments.map((fragment) => indexOfSent(api, fragment));
+      for (const index of indexes) {
+        expect(index).toBeGreaterThanOrEqual(0);
+      }
+      expect([...indexes].sort((a, b) => a - b)).toEqual(indexes);
+    }
+
+    async function dispatch(): Promise<void> {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    }
+
+    function emitCommand(
+      summaryAggregator: { processEvent(event: Event): void },
+      callId: string,
+      command: string,
+    ): void {
+      emitBashTool(summaryAggregator, "running", { callId, command });
+      emitBashTool(summaryAggregator, "completed", { callId, command });
+    }
+
+    it("opens a new message below a reply already on screen for the next command", async () => {
+      const { api, summaryAggregator } = await setupService(false);
+      useTrackerFakeTimers();
+
+      emitCommand(summaryAggregator, "call-1", "Get-ChildItem");
+      await flushPendingDispatch();
+      emitAssistantTextPart(summaryAggregator, "First reply");
+      await flushPendingDispatch();
+      emitCommand(summaryAggregator, "call-2", "Get-Content package.json");
+      await flushPendingDispatch();
+
+      expectSentInOrder(api, ["Get-ChildItem", "First reply", "Get-Content package.json"]);
+      const texts = collectSentTexts(api);
+      expect(
+        texts.some((text) => text.includes("Get-ChildItem") && text.includes("Get-Content")),
+      ).toBe(false);
+    });
+
+    it("sends a reply still waiting on its timer above the command that followed it", async () => {
+      const { api, summaryAggregator } = await setupService(false);
+      useTrackerFakeTimers();
+
+      emitCommand(summaryAggregator, "call-1", "Get-ChildItem");
+      await flushPendingDispatch();
+      emitAssistantTextPart(summaryAggregator, "First reply");
+      await dispatch();
+      emitCommand(summaryAggregator, "call-2", "Get-Content package.json");
+      emitAssistantCompleted(summaryAggregator);
+      await flushPendingDispatch();
+
+      expectSentInOrder(api, ["Get-ChildItem", "First reply", "Get-Content package.json"]);
+      expect(sentMessageTexts(api).filter((text) => text.includes("First reply"))).toHaveLength(1);
+    });
+
+    it("keeps an earlier command above the reply when its send is rate-limited", async () => {
+      const { api, summaryAggregator } = await setupService(false);
+      useTrackerFakeTimers();
+      api.sendMessage.mockRejectedValueOnce(
+        new Error("Call to 'sendMessage' failed! (429: Too Many Requests: retry after 2)"),
+      );
+
+      emitCommand(summaryAggregator, "call-1", "Get-ChildItem");
+      await dispatch();
+      emitAssistantTextPart(summaryAggregator, "First reply");
+      await dispatch();
+      emitCommand(summaryAggregator, "call-2", "Get-Content package.json");
+      await flushPendingDispatch();
+      await flushPendingDispatch();
+
+      expectSentInOrder(api, ["Get-ChildItem", "First reply", "Get-Content package.json"]);
+    });
+
+    it("sends a pending reply above the thinking message of the next step", async () => {
+      const { api, summaryAggregator } = await setupService(false, { showThinkingContent: false });
+      useTrackerFakeTimers();
+
+      emitAssistantTextPart(summaryAggregator, "First reply");
+      await dispatch();
+      emitAssistantMessage(summaryAggregator, "message-2");
+      emitThinkingPart(summaryAggregator, "next step", "message-2");
+      await flushPendingDispatch();
+
+      expectSentInOrder(api, ["First reply", "💭 Thinking..."]);
+    });
+
+    it("sends a pending reply above a subagent card", async () => {
+      const { api, summaryAggregator } = await setupService(false);
+      useTrackerFakeTimers();
+
+      emitAssistantTextPart(summaryAggregator, "First reply");
+      await dispatch();
+      emitSubagentStart(summaryAggregator);
+      await dispatch();
+      emitAssistantCompleted(summaryAggregator);
+      await flushPendingDispatch();
+
+      expectSentInOrder(api, ["First reply", "🧩"]);
+    });
+
+    it("sends a pending reply above a tool delivered as a document", async () => {
+      const { api, summaryAggregator } = await setupService(true);
+      useTrackerFakeTimers();
+
+      emitAssistantTextPart(summaryAggregator, "First reply");
+      await dispatch();
+      emitWriteTool(summaryAggregator, "completed");
+      emitAssistantCompleted(summaryAggregator);
+      await flushPendingDispatch();
+
+      await vi.waitFor(() => expect(api.sendDocument).toHaveBeenCalledTimes(1));
+      const replyIndex = indexOfSent(api, "First reply");
+      expect(replyIndex).toBeGreaterThanOrEqual(0);
+      expect(defined(api.sendMessage.mock.invocationCallOrder[replyIndex])).toBeLessThan(
+        defined(api.sendDocument.mock.invocationCallOrder[0]),
+      );
+    });
+
+    it("sends a pending reply above a question", async () => {
+      const { api, summaryAggregator } = await setupService(false);
+
+      emitAssistantTextPart(summaryAggregator, "First reply");
+      await dispatch();
+      emitQuestionAsked(summaryAggregator, "q1");
+
+      await vi.waitFor(() => {
+        expect(indexOfSent(api, "Which option for q1?")).toBeGreaterThanOrEqual(0);
+      });
+      expectSentInOrder(api, ["First reply", "Which option for q1?"]);
+    });
+
+    it("finishes overlapping documents around a reply's text in the order they happened", async () => {
+      const { api, summaryAggregator } = await setupService(true);
+      useTrackerFakeTimers();
+      const releases: Array<() => void> = [];
+      api.sendDocument.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            releases.push(() => resolve({ message_id: 101 }));
+          }),
+      );
+
+      emitWriteTool(summaryAggregator, "completed", "call-write-1");
+      await vi.waitFor(() => expect(api.sendDocument).toHaveBeenCalledTimes(1));
+      emitBashTool(summaryAggregator, "running", { callId: "call-held", command: "sleep 60" });
+      await dispatch();
+      emitAssistantTextPart(summaryAggregator, "First reply");
+      await dispatch();
+      emitWriteTool(summaryAggregator, "completed", "call-write-2");
+      await dispatch();
+
+      releases.shift()?.();
+      await vi.waitFor(() => expect(api.sendDocument).toHaveBeenCalledTimes(2));
+      releases.shift()?.();
+      await flushPendingDispatch();
+
+      const replyIndex = indexOfSent(api, "First reply");
+      const heldIndex = indexOfSent(api, "sleep 60");
+      expect(heldIndex).toBeGreaterThanOrEqual(0);
+      expect(heldIndex).toBeLessThan(replyIndex);
+      const replyOrder = defined(api.sendMessage.mock.invocationCallOrder[replyIndex]);
+      expect(defined(api.sendDocument.mock.invocationCallOrder[0])).toBeLessThan(replyOrder);
+      expect(replyOrder).toBeLessThan(defined(api.sendDocument.mock.invocationCallOrder[1]));
+    });
+
+    it("sends a reply nothing follows once, at completion, as before", async () => {
+      const { api, summaryAggregator } = await setupService(false);
+      useTrackerFakeTimers();
+
+      emitAssistantTextPart(summaryAggregator, "Only reply");
+      await dispatch();
+      emitAssistantCompleted(summaryAggregator);
+      await flushPendingDispatch();
+
+      expect(sentMessageTexts(api).filter((text) => text.includes("Only reply"))).toHaveLength(1);
+      expect(api.editMessageText).not.toHaveBeenCalled();
+    });
+
+    describe("compact mode", () => {
+      async function setupCompact(): Promise<Awaited<ReturnType<typeof setupService>>> {
+        const setup = await setupService(false);
+        const settingsStore = await import("../../../src/app/stores/settings-store.js");
+        settingsStore.setCompactOutputMode(true);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        useTrackerFakeTimers();
+        return setup;
+      }
+
+      it("closes the card above a reply and opens the next one below it", async () => {
+        const { api, summaryAggregator } = await setupCompact();
+
+        emitCommand(summaryAggregator, "call-1", "Get-ChildItem");
+        await flushPendingDispatch();
+        emitAssistantTextPart(summaryAggregator, "First reply");
+        await flushPendingDispatch();
+        emitBashTool(summaryAggregator, "running", { callId: "call-2", command: "Get-Content" });
+        await flushPendingDispatch();
+        emitBashTool(summaryAggregator, "completed", { callId: "call-2", command: "Get-Content" });
+        emitAssistantCompleted(summaryAggregator);
+        await flushPendingDispatch();
+        emitAssistantMessage(summaryAggregator, "message-2");
+        emitAssistantTextPart(summaryAggregator, "Second reply", "message-2");
+        await dispatch();
+        emitAssistantCompleted(summaryAggregator, "message-2");
+        await flushPendingDispatch();
+
+        const texts = sentMessageTexts(api);
+        const cards = texts
+          .map((text, index) => ({ text, index }))
+          .filter(({ text }) => text.includes("⏳ Working"));
+        expect(cards).toHaveLength(2);
+        const firstReply = indexOfSent(api, "First reply");
+        const secondReply = indexOfSent(api, "Second reply");
+        expect(defined(cards[0]).index).toBeLessThan(firstReply);
+        expect(firstReply).toBeLessThan(defined(cards[1]).index);
+        expect(defined(cards[1]).index).toBeLessThan(secondReply);
+        expect(defined(cards[1]).text).toContain("Get-Content");
+        expect(collectSentTexts(api).filter((text) => text.includes("✅ Finished Work"))).toHaveLength(
+          2,
+        );
+      });
+
+      it("sends a reply deferred behind the card above a question", async () => {
+        const { api, summaryAggregator } = await setupCompact();
+
+        emitThinkingPart(summaryAggregator, "planning");
+        await dispatch();
+        emitAssistantTextPart(summaryAggregator, "First reply");
+        await dispatch();
+        emitQuestionAsked(summaryAggregator, "q1");
+
+        await vi.waitFor(() => {
+          expect(indexOfSent(api, "Which option for q1?")).toBeGreaterThanOrEqual(0);
+        });
+        expectSentInOrder(api, ["⏳ Working", "First reply", "Which option for q1?"]);
+      });
+
+      it("keeps going when a reply starts while the card is closing", async () => {
+        const { api, summaryAggregator } = await setupCompact();
+
+        emitCommand(summaryAggregator, "call-1", "Get-ChildItem");
+        await flushPendingDispatch();
+        emitAssistantTextPart(summaryAggregator, "First reply");
+        await flushPendingDispatch();
+        emitBashTool(summaryAggregator, "running", { callId: "call-2", command: "Get-Content" });
+        emitAssistantMessage(summaryAggregator, "message-2");
+        emitAssistantTextPart(summaryAggregator, "Second reply", "message-2");
+        await flushPendingDispatch();
+        emitBashTool(summaryAggregator, "completed", { callId: "call-2", command: "Get-Content" });
+        emitAssistantCompleted(summaryAggregator);
+        emitAssistantCompleted(summaryAggregator, "message-2");
+        await flushPendingDispatch();
+
+        await vi.waitFor(() => {
+          expect(indexOfSent(api, "Second reply")).toBeGreaterThanOrEqual(0);
+        });
+        expect(indexOfSent(api, "First reply")).toBeLessThan(indexOfSent(api, "Second reply"));
+      });
+    });
+  });
 });
