@@ -15,6 +15,7 @@ const mocked = vi.hoisted(() => ({
 vi.mock("../../../src/app/stores/settings-store.js", () => ({
   getTtsMode: mocked.getTtsModeMock,
   getPromptQueueMode: mocked.getPromptQueueModeMock,
+  getCurrentSession: vi.fn(() => undefined),
 }));
 
 vi.mock("../../../src/utils/logger.js", () => ({

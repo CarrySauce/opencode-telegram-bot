@@ -55,6 +55,11 @@ vi.mock("../../../src/bot/handlers/prompt.js", () => ({
 }));
 
 const withdrawPromptQueueMock = vi.hoisted(() => vi.fn());
+const withdrawAllHandedOverPromptsMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../../../src/bot/handlers/prompt-handover.js", () => ({
+  withdrawAllHandedOverPrompts: withdrawAllHandedOverPromptsMock,
+}));
 
 vi.mock("../../../src/app/services/prompt-inbox-service.js", () => ({
   withdrawPromptQueue: withdrawPromptQueueMock,
@@ -184,6 +189,9 @@ describe("bot/commands/opencode-stop-command", () => {
     withdrawPromptQueueMock.mockReset().mockImplementation(async () => {
       order.push("withdraw");
     });
+    withdrawAllHandedOverPromptsMock.mockReset().mockImplementation(async () => {
+      order.push("withdraw_handed_over");
+    });
     mocked.findServerPidMock.mockResolvedValue(456);
     mocked.killServerProcessMock.mockImplementation(async () => {
       order.push("kill");
@@ -193,7 +201,8 @@ describe("bot/commands/opencode-stop-command", () => {
     await opencodeStopCommand(ctx as never, createDeps());
 
     expect(withdrawPromptQueueMock).toHaveBeenCalledWith("opencode_stop");
-    expect(order).toEqual(["withdraw", "kill"]);
+    expect(withdrawAllHandedOverPromptsMock).toHaveBeenCalledWith("opencode_stop");
+    expect(order).toEqual(["withdraw", "withdraw_handed_over", "kill"]);
   });
 
   it("ends the lost run in the chat after the kill and before the local reset", async () => {

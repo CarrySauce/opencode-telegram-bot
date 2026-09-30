@@ -51,6 +51,8 @@ class PromptQueueManager {
   private nextId = 1;
   private queuedMediaBytes = 0;
   private reservations = new Set<string>();
+  /** Reservations handed over at /detach, by the session they were admitted to. */
+  private handedOverReservations = new Map<string, string>();
   private deliveredInboxIds: string[] = [];
 
   add(input: QueuedPromptInput): QueuedPrompt | null {
@@ -185,6 +187,40 @@ class PromptQueueManager {
     return this.queuedMediaBytes;
   }
 
+  /**
+   * Empties the queue for /detach and returns the items it removed. Admissions still on
+   * their way stay with the detached session: their reservations are handed over rather
+   * than dropped, and a later clear leaves them alone.
+   */
+  handOver(sessionId: string, reason: string): QueuedPrompt[] {
+    for (const reservationId of this.reservations) {
+      this.handedOverReservations.set(reservationId, sessionId);
+    }
+
+    logger.info(
+      `[PromptQueue] Handed queue over: reason=${reason}, session=${sessionId}, count=${this.items.length}, reservations=${this.reservations.size}`,
+    );
+    const removed = this.items;
+    this.items = [];
+    this.reservations.clear();
+    this.queuedMediaBytes = 0;
+    return removed;
+  }
+
+  /** Releases a handed-over reservation; returns false when it was not handed over or was withdrawn. */
+  releaseHandedOverReservation(reservationId: string): boolean {
+    return this.handedOverReservations.delete(reservationId);
+  }
+
+  /** Withdraws handed-over reservations of one session, or of all when none is given. */
+  withdrawHandedOverReservations(sessionId?: string): void {
+    for (const [reservationId, reservedSessionId] of this.handedOverReservations) {
+      if (sessionId === undefined || reservedSessionId === sessionId) {
+        this.handedOverReservations.delete(reservationId);
+      }
+    }
+  }
+
   /** Empties the queue, reservations included, and returns the items it removed. */
   clear(reason: string): QueuedPrompt[] {
     this.deliveredInboxIds = [];
@@ -207,6 +243,7 @@ class PromptQueueManager {
     this.nextId = 1;
     this.queuedMediaBytes = 0;
     this.reservations.clear();
+    this.handedOverReservations.clear();
     this.deliveredInboxIds = [];
   }
 }

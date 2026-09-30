@@ -47,6 +47,7 @@ vi.mock("../../../src/app/services/session-service.js", async (importOriginal) =
 }));
 
 import { MAX_QUEUED_PROMPTS, promptQueue } from "../../../src/app/managers/prompt-queue-manager.js";
+import { promptHandover } from "../../../src/app/managers/prompt-handover-manager.js";
 import {
   __resetPromptQueueDispatchForTests,
   dispatchNextQueuedPrompt,
@@ -78,6 +79,7 @@ function makeContext(): Context {
 describe("bot/handlers/prompt-queue-dispatch on OpenCode V2", () => {
   beforeEach(() => {
     promptQueue.__resetForTests();
+    promptHandover.__resetForTests();
     __resetPromptQueueDispatchForTests();
     DEPS.assistantRunState.clearAll("test");
     replyMock = vi.fn().mockResolvedValue(undefined);
@@ -161,6 +163,41 @@ describe("bot/handlers/prompt-queue-dispatch on OpenCode V2", () => {
       expect(promptQueue.reserve()).not.toBeNull();
     }
     expect(replyMock).not.toHaveBeenCalled();
+  });
+
+  it("leaves a prompt on its way at /detach with that session, even after a switch", async () => {
+    mocked.admitPromptToInbox.mockImplementation(async () => {
+      promptHandover.recordDetach(SESSION, { agent: "build", providerID: "p", modelID: "m" });
+      promptQueue.handOver("ses-1", "detach_command");
+      promptQueue.clear("session_switched");
+      return { sessionId: "ses-1", inboxId: "msg-1" };
+    });
+
+    await tryEnqueuePrompt(makeContext(), createIncomingPrompt("Right before detach"));
+
+    expect(mocked.cancelInboxPrompt).not.toHaveBeenCalled();
+    expect(replyMock).not.toHaveBeenCalled();
+    expect(promptQueue.size()).toBe(0);
+    expect(promptHandover.get("ses-1")?.inboxEntries).toEqual([
+      { sessionId: "ses-1", inboxId: "msg-1", delivery: "steer" },
+    ]);
+  });
+
+  it("cancels a prompt on its way at /detach once the hand-over is withdrawn", async () => {
+    mocked.admitPromptToInbox.mockImplementation(async () => {
+      promptHandover.recordDetach(SESSION, { agent: "build", providerID: "p", modelID: "m" });
+      promptQueue.handOver("ses-1", "detach_command");
+      promptQueue.withdrawHandedOverReservations("ses-1");
+      promptHandover.withdraw("ses-1", "abort_command");
+      return { sessionId: "ses-1", inboxId: "msg-1" };
+    });
+
+    await tryEnqueuePrompt(makeContext(), createIncomingPrompt("Withdrawn"));
+
+    expect(mocked.cancelInboxPrompt).toHaveBeenCalledWith(
+      { sessionId: "ses-1", inboxId: "msg-1", delivery: "steer" },
+      "withdrawn_during_admission",
+    );
   });
 
   it("cancels a prompt whose queue was cleared while it was on its way", async () => {

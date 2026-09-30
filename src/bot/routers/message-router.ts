@@ -27,6 +27,7 @@ import { handleDocumentMessage } from "../handlers/document-handler.js";
 import { createMediaGroupAttachmentMiddleware } from "../handlers/media-group-handler.js";
 import { handlePhotoMessage } from "../handlers/photo-handler.js";
 import { queuePromptForMerging } from "../handlers/message-merger.js";
+import { tryEnqueuePromptIfBusy } from "../handlers/prompt-queue-dispatch.js";
 import { handleCatalogTextArguments } from "../handlers/text-message-handler.js";
 import { handleVoiceMessage } from "../handlers/voice-handler.js";
 import { unknownCommandMiddleware } from "../middleware/unknown-command.js";
@@ -231,6 +232,12 @@ export function registerMessageRouter(bot: Bot<Context>, deps: MessageRouterDeps
 
     const handledCatalogTextArgs = await handleCatalogTextArguments(ctx, botDeps);
     if (handledCatalogTextArgs) {
+      return;
+    }
+
+    // The guard lets text through while prompts handed over at /detach still wait for
+    // this session; it queues behind them.
+    if (await tryEnqueuePromptIfBusy(ctx, input)) {
       return;
     }
 

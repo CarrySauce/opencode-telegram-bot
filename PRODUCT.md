@@ -55,7 +55,7 @@ No public inbound ports are required for normal usage.
 - Send text prompts to OpenCode
 - Accept voice/audio messages, transcribe via Whisper-compatible STT API, and forward recognized text as prompts
 - Interrupt current task (ESC equivalent)
-- Optionally accept text, transcribed voice, photos, rich formatted messages with photos, supported documents, and media groups sent while a task is running, at most `MAX_QUEUED_PROMPTS` (5) waiting at a time: on OpenCode V2 they wait in the session inbox and are steered into the running turn (Steer, the V2 default) or start their own run after it (Queue); on V1 the bot holds them, with at most 20 MiB of raw Telegram media bytes checked from reliable `file_size` before downloads; the V1 On/Off choice and the V2 mode are kept separately, so switching versions changes neither
+- Optionally accept text, transcribed voice, photos, rich formatted messages with photos, supported documents, and media groups sent while a task is running, at most `MAX_QUEUED_PROMPTS` (5) waiting at a time: on OpenCode V2 they wait in the session inbox and are steered into the running turn (Steer, the V2 default) or start their own run after it (Queue); on V1 the bot holds them, with at most 20 MiB of raw Telegram media bytes checked from reliable `file_size` before downloads; the V1 On/Off choice and the V2 mode are kept separately, so switching versions changes neither; `/detach` leaves waiting messages to the detached session, where they are sent as if the bot had stayed attached, with the agent and model selected at `/detach`
 - Handle OpenCode questions with inline options and custom text answers; the custom answer button is offered only when the question accepts a custom answer
 - Questions asked by a subagent of the followed session appear in the chat like the main agent's and are answered to that subagent
 - A question answered or cancelled outside Telegram (OpenCode TUI, web, another client) closes the poll on screen: its buttons go and a line says it was answered or cancelled outside Telegram
@@ -132,7 +132,7 @@ Current command set:
 - `/status` - bot version, server, project, and session status
 - `/new` - create a new session
 - `/abort` - stop the current task
-- `/detach` - detach the bot from the current session without stopping it; a later command or prompt HTTP failure for that session is not posted to chat unless the bot has re-attached to it
+- `/detach` - detach the bot from the current session without stopping it; messages waiting for its running task stay with it and reach it as if the bot had stayed attached (no buttons, withdrawn only by `/abort` there or `/opencode_stop`); a later command or prompt HTTP failure for that session is not posted to chat unless the bot has re-attached to it
 - `/sessions` - show and switch recent sessions
 - `/recent` - show recent sessions across projects and worktrees with their status and switch directly to one
 - `/messages` - browse user messages in the current session
@@ -219,7 +219,7 @@ Agent picker behavior:
 - [x] Attaching a project file from `/ls` to the next prompt as a native OpenCode file part
 - [x] `/messages` command: browse session messages with revert and fork functionality
 - [x] Optional message queue for text, voice, photos, rich formatted messages with photos, documents, and media groups sent while the agent is busy, managed from the bottom keyboard
-- [x] OpenCode V2: messages sent mid-run are steered into the running turn or queued in the session inbox (Off / Queue / Steer in `/settings`), withdrawable until picked up
+- [x] OpenCode V2: messages sent mid-run are steered into the running turn or queued in the session inbox (Off / Queue / Steer in `/settings`), withdrawable until picked up or until `/detach` leaves them to the session
 - [x] Native Telegram rich message formatting for assistant replies (Bot API 10.1)
 - [x] Incoming Telegram rich formatted messages (Bot API 10.1): converted to Markdown, accepted anywhere text is accepted, with photos attached and unsupported message types answered explicitly
 - [x] Startup either reaches Telegram polling or the process exits: transient Telegram failures are retried in-process; a bad token or other fatal startup error exits with code 1

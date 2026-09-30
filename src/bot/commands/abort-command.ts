@@ -6,6 +6,7 @@ import { logger } from "../../utils/logger.js";
 import { t } from "../../i18n/index.js";
 import { markAttachedSessionIdle } from "../../app/services/attach-service.js";
 import { clearPromptResponseMode } from "../handlers/prompt.js";
+import { withdrawHandedOverPrompts } from "../handlers/prompt-handover.js";
 import { markUserAbortRequested } from "../../app/managers/abort-suppression-manager.js";
 import { withdrawPromptQueue } from "../../app/services/prompt-inbox-service.js";
 import { promptAttachment } from "../../app/managers/prompt-attachment-manager.js";
@@ -194,5 +195,10 @@ export async function abortCommand(
   ctx: CommandContext<Context>,
   deps: AbortCommandDeps,
 ): Promise<void> {
+  // Only /abort itself: /start shares the abort below but leaves what /detach handed over.
+  const currentSession = getCurrentSession();
+  if (currentSession) {
+    await withdrawHandedOverPrompts(currentSession.id, "abort_command");
+  }
   await abortCurrentOperation(ctx, deps);
 }

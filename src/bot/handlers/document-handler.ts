@@ -17,6 +17,7 @@ import { flushPendingPrompt } from "./message-merger.js";
 import { createIncomingPrompt, type IncomingPrompt } from "../../app/types/prompt.js";
 import {
   rejectQueuedMediaBeforePreparation,
+  takeArrivalTicket,
   tryEnqueuePromptIfBusy,
 } from "./prompt-queue-dispatch.js";
 
@@ -52,6 +53,7 @@ export async function handleDocumentMessage(
   }
 
   flushPendingPrompt(ctx.chat!.id);
+  const ticket = takeArrivalTicket();
 
   const caption = ctx.message.caption || "";
   const mimeType = doc.mime_type || "";
@@ -63,11 +65,15 @@ export async function handleDocumentMessage(
   ): Promise<void> => {
     const input = createIncomingPrompt(text, { fileParts });
     if (
-      await tryEnqueuePromptIfBusy(ctx, {
-        ...input,
-        displayText: caption.trim() || filename,
-        mediaBytes,
-      })
+      await tryEnqueuePromptIfBusy(
+        ctx,
+        {
+          ...input,
+          displayText: caption.trim() || filename,
+          mediaBytes,
+        },
+        ticket,
+      )
     ) {
       return;
     }

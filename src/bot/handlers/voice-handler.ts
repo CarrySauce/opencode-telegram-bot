@@ -19,7 +19,7 @@ import { t } from "../../i18n/index.js";
 import { buildTelegramFileUrl } from "../../app/services/file-download-service.js";
 import { buildQuotedNotification } from "../../app/services/quoted-notification.js";
 import { editBotText } from "../messages/telegram-text.js";
-import { tryEnqueuePromptIfBusy } from "./prompt-queue-dispatch.js";
+import { takeArrivalTicket, tryEnqueuePromptIfBusy } from "./prompt-queue-dispatch.js";
 
 const TELEGRAM_DOWNLOAD_TIMEOUT_MS = 30_000;
 const TELEGRAM_DOWNLOAD_MAX_REDIRECTS = 3;
@@ -195,6 +195,7 @@ export async function handleVoiceMessage(ctx: Context, deps: VoiceMessageDeps): 
   }
 
   flushPendingPrompt(ctx.chat!.id);
+  const ticket = takeArrivalTicket();
 
   // Check if STT is configured
   if (!sttConfigured()) {
@@ -261,11 +262,15 @@ export async function handleVoiceMessage(ctx: Context, deps: VoiceMessageDeps): 
     const responseMode =
       currentTtsMode === "all" || currentTtsMode === "auto" ? "text_and_tts" : "text_only";
     if (
-      await tryEnqueuePromptIfBusy(ctx, {
-        ...createIncomingPrompt(textForLLM),
-        displayText: recognizedText,
-        responseMode,
-      })
+      await tryEnqueuePromptIfBusy(
+        ctx,
+        {
+          ...createIncomingPrompt(textForLLM),
+          displayText: recognizedText,
+          responseMode,
+        },
+        ticket,
+      )
     ) {
       return;
     }

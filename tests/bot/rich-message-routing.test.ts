@@ -4,6 +4,8 @@ import type { RichBlock, Update, UserFromGetMe } from "grammy/types";
 import { config } from "../../src/config.js";
 import { t } from "../../src/i18n/index.js";
 import { promptQueue } from "../../src/app/managers/prompt-queue-manager.js";
+import { promptHandover } from "../../src/app/managers/prompt-handover-manager.js";
+import { createIncomingPrompt } from "../../src/app/types/prompt.js";
 import type { AppContainer } from "../../src/app/bootstrap/app-container.js";
 
 const mocked = vi.hoisted(() => ({
@@ -15,6 +17,7 @@ const mocked = vi.hoisted(() => ({
   handleCatalogTextArguments: vi.fn(),
   statusCommand: vi.fn(),
   getPromptQueueMode: vi.fn(),
+  getCurrentSession: vi.fn(),
 }));
 
 vi.mock("../../src/bot/handlers/message-merger.js", () => ({
@@ -53,6 +56,7 @@ vi.mock("../../src/app/stores/settings-store.js", async (importOriginal) => {
   return {
     ...actual,
     getPromptQueueMode: mocked.getPromptQueueMode,
+    getCurrentSession: mocked.getCurrentSession,
   };
 });
 
@@ -143,7 +147,24 @@ describe("bot/rich-message-routing", () => {
     mocked.handleCatalogTextArguments.mockReset().mockResolvedValue(false);
     mocked.statusCommand.mockReset().mockResolvedValue(undefined);
     mocked.getPromptQueueMode.mockReset().mockReturnValue("off");
+    mocked.getCurrentSession.mockReset().mockReturnValue(undefined);
     promptQueue.__resetForTests();
+    promptHandover.__resetForTests();
+  });
+
+  it("queues a prompt behind messages handed over at /detach after re-attaching", async () => {
+    const session = { id: "ses-1", title: "Session", directory: "D:/repo" };
+    const selection = { agent: "build", providerID: "p", modelID: "m" };
+    mocked.getPromptQueueMode.mockReturnValue("queue");
+    mocked.getCurrentSession.mockReturnValue(session);
+    promptHandover.recordDetach(session, selection);
+    promptHandover.addPrompt("ses-1", { ...createIncomingPrompt("handed over"), selection });
+    const { bot } = createRoutingBot();
+
+    await bot.handleUpdate(richUpdate([{ type: "paragraph", text: "Sent after re-attaching" }]));
+
+    expect(mocked.queuePromptForMerging).not.toHaveBeenCalled();
+    expect(promptQueue.list().map((item) => item.text)).toEqual(["Sent after re-attaching"]);
   });
 
   it("routes a converted rich sentence as an ordinary prompt", async () => {

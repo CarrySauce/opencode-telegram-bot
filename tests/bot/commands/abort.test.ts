@@ -12,6 +12,7 @@ import {
   shouldSuppressUserAbortSessionError,
 } from "../../../src/app/managers/abort-suppression-manager.js";
 import { createTestAppContainer } from "../../helpers/app-container.js";
+import { defined } from "../../helpers/defined.js";
 import type { AppContainer } from "../../../src/app/bootstrap/app-container.js";
 
 const mocked = vi.hoisted(() => ({
@@ -22,6 +23,7 @@ const mocked = vi.hoisted(() => ({
   markAttachedSessionIdleMock: vi.fn(),
   clearPromptResponseModeMock: vi.fn(),
   inboxCancelMock: vi.fn(),
+  withdrawHandedOverPromptsMock: vi.fn(),
 }));
 
 vi.mock("../../../src/app/services/session-service.js", () => ({
@@ -46,6 +48,10 @@ vi.mock("../../../src/app/services/attach-service.js", () => ({
 
 vi.mock("../../../src/bot/handlers/prompt.js", () => ({
   clearPromptResponseMode: mocked.clearPromptResponseModeMock,
+}));
+
+vi.mock("../../../src/bot/handlers/prompt-handover.js", () => ({
+  withdrawHandedOverPrompts: mocked.withdrawHandedOverPromptsMock,
 }));
 
 const TEST_QUESTION: Question = {
@@ -94,7 +100,33 @@ describe("bot/commands/abort", () => {
     mocked.markAttachedSessionIdleMock.mockReset();
     mocked.markAttachedSessionIdleMock.mockResolvedValue(undefined);
     mocked.clearPromptResponseModeMock.mockReset();
+    mocked.withdrawHandedOverPromptsMock.mockReset().mockResolvedValue(undefined);
     __resetUserAbortErrorSuppressionForTests();
+  });
+
+  it("withdraws what /detach handed over to the session before aborting it", async () => {
+    mocked.currentSession = { id: "session-1", title: "Session", directory: "D:/repo" };
+    mocked.abortMock.mockResolvedValue({ data: true, error: null });
+    mocked.statusMock.mockResolvedValue({ data: { "session-1": { type: "idle" } }, error: null });
+    const ctx = { chat: { id: 1 }, reply: vi.fn().mockResolvedValue({ message_id: 1 }) };
+
+    await abortCommand(ctx as never, createDeps());
+
+    expect(mocked.withdrawHandedOverPromptsMock).toHaveBeenCalledWith("session-1", "abort_command");
+    expect(
+      defined(mocked.withdrawHandedOverPromptsMock.mock.invocationCallOrder[0]),
+    ).toBeLessThan(defined(mocked.abortMock.mock.invocationCallOrder[0]));
+  });
+
+  it("leaves handed-over messages alone in the abort /start shares", async () => {
+    mocked.currentSession = { id: "session-1", title: "Session", directory: "D:/repo" };
+    mocked.abortMock.mockResolvedValue({ data: true, error: null });
+    mocked.statusMock.mockResolvedValue({ data: { "session-1": { type: "idle" } }, error: null });
+    const ctx = { chat: { id: 1 }, reply: vi.fn().mockResolvedValue({ message_id: 1 }) };
+
+    await abortCurrentOperation(ctx as never, createDeps(), { notifyUser: false });
+
+    expect(mocked.withdrawHandedOverPromptsMock).not.toHaveBeenCalled();
   });
 
   function markSessionBusy(): void {

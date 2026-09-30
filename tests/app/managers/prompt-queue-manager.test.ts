@@ -207,4 +207,52 @@ describe("app/managers/prompt-queue-manager", () => {
       expect(promptQueue.wasInboxIdDelivered("msg-1")).toBe(false);
     });
   });
+
+  describe("hand-over at /detach", () => {
+    it("empties the queue, frees the cap and returns the items in order", () => {
+      promptQueue.add({ ...prompt("first"), mediaBytes: 100 });
+      promptQueue.add(prompt("second"));
+
+      const handedOver = promptQueue.handOver("ses-1", "detach_command");
+
+      expect(handedOver.map((item) => item.text)).toEqual(["first", "second"]);
+      expect(promptQueue.size()).toBe(0);
+      expect(promptQueue.mediaSize()).toBe(0);
+    });
+
+    it("keeps reservations on their way out of the cap and out of later clears", () => {
+      for (let index = 0; index < MAX_QUEUED_PROMPTS; index++) {
+        promptQueue.reserve();
+      }
+      const reservationId = "reserved-1";
+
+      promptQueue.handOver("ses-1", "detach_command");
+      promptQueue.clear("session_switched");
+
+      expect(promptQueue.isFull()).toBe(false);
+      expect(promptQueue.releaseHandedOverReservation(reservationId)).toBe(true);
+      expect(promptQueue.releaseHandedOverReservation(reservationId)).toBe(false);
+    });
+
+    it("releases handed-over reservations only of the withdrawn session", () => {
+      const first = promptQueue.reserve()!;
+      promptQueue.handOver("ses-1", "detach_command");
+      const second = promptQueue.reserve()!;
+      promptQueue.handOver("ses-2", "detach_command");
+
+      promptQueue.withdrawHandedOverReservations("ses-1");
+
+      expect(promptQueue.releaseHandedOverReservation(first)).toBe(false);
+      expect(promptQueue.releaseHandedOverReservation(second)).toBe(true);
+    });
+
+    it("releases every handed-over reservation when no session is given", () => {
+      const reservationId = promptQueue.reserve()!;
+      promptQueue.handOver("ses-1", "detach_command");
+
+      promptQueue.withdrawHandedOverReservations();
+
+      expect(promptQueue.releaseHandedOverReservation(reservationId)).toBe(false);
+    });
+  });
 });

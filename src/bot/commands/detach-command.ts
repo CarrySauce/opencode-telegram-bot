@@ -9,6 +9,7 @@ import {
 import { formatSessionTitle } from "../../app/formatters/session-title-formatter.js";
 import { detachAttachedSession } from "../../app/services/attach-service.js";
 import { clearPromptResponseMode } from "../handlers/prompt.js";
+import { handOverPromptQueue } from "../handlers/prompt-handover.js";
 import { logger } from "../../utils/logger.js";
 import { t } from "../../i18n/index.js";
 
@@ -42,6 +43,9 @@ export async function detachCommand(
 
     const title = await fetchSessionTitle(currentSession);
 
+    // What waits for the running turn stays with the session: clearing it below then
+    // finds nothing to withdraw.
+    await handOverPromptQueue(currentSession);
     detachAttachedSession("detach_command", deps);
     clearPromptResponseMode(currentSession.id);
     deps.foregroundSessionState.markIdle(currentSession.id);

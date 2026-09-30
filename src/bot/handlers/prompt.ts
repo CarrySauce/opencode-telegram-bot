@@ -38,6 +38,7 @@ import {
   supportsInput,
 } from "../../app/services/model-capabilities-service.js";
 import type { IncomingPrompt } from "../../app/types/prompt.js";
+import type { HandoverSelection } from "../../app/managers/prompt-handover-manager.js";
 
 /** Module-level references for async callbacks that don't have ctx. */
 let botInstance: Bot<Context> | null = null;
@@ -406,21 +407,12 @@ async function preparePromptRequest(
 ): Promise<PreparedPromptRequest | null> {
   const currentAgent = await resolveProjectAgent(getStoredAgent());
   const storedModel = (deps.getStoredModel ?? getStoredModel)();
-  const preparedInput = await prepareTelegramPhotos(ctx, input, deps, storedModel);
+  const preparedInput = await prepareTelegramPhotos(ctx.api, input, deps, storedModel, (text) =>
+    ctx.reply(text),
+  );
   if (!preparedInput) {
     return null;
   }
-
-  // Build parts array with text and files
-  const parts: Array<TextPartInput | FilePartInput> = [];
-
-  // Add text part if present
-  if (preparedInput.text.trim().length > 0) {
-    parts.push({ type: "text", text: preparedInput.text });
-  }
-
-  // Add file parts
-  parts.push(...preparedInput.fileParts);
 
   // A file picked in /ls belongs to this prompt. Capture whether one existed before
   // resolving it: the resolver clears the attachment on every failed check, so afterwards
@@ -428,9 +420,7 @@ async function preparePromptRequest(
   const pendingAttachment = promptAttachment.get();
   const attachmentPart = await resolvePendingAttachment(currentSession.directory);
 
-  if (attachmentPart) {
-    parts.push(attachmentPart);
-  } else if (pendingAttachment) {
+  if (!attachmentPart && pendingAttachment) {
     await ctx.reply(t("attachment.invalid"));
   }
 
@@ -443,39 +433,14 @@ async function preparePromptRequest(
     await retireAttachmentConfirmation(ctx, pendingAttachment.confirmationMessageId);
   }
 
-  // If no text and files exist, use a placeholder
-  if (parts.length === 0 || (parts.length > 0 && parts.every((p) => p.type === "file"))) {
-    if (preparedInput.fileParts.length > 0) {
-      // Files without text - add a minimal system prompt
-      const attachmentText =
-        preparedInput.fileParts.length === 1 ? "See attached file" : "See attached files";
-      parts.unshift({ type: "text", text: attachmentText });
-    }
-  }
+  const promptOptions = buildPromptOptions(currentSession, preparedInput, attachmentPart, {
+    agent: currentAgent,
+    ...storedModel,
+  });
 
-  // Counted from `parts` rather than `fileParts`: a file attached through /ls is added
-  // above and would otherwise be missing from the logs.
-  const filePartCount = parts.filter((part) => part.type === "file").length;
-
-  const promptOptions: PromptRequestOptions = {
-    sessionID: currentSession.id,
-    directory: currentSession.directory,
-    parts,
-    ...(currentAgent ? { agent: currentAgent } : {}),
-  };
-
-  // Use stored model (from settings or config)
-  if (storedModel.providerID && storedModel.modelID) {
-    promptOptions.model = {
-      providerID: storedModel.providerID,
-      modelID: storedModel.modelID,
-    };
-
-    // Add variant if specified
-    if (storedModel.variant) {
-      promptOptions.variant = storedModel.variant;
-    }
-  }
+  // Counted from `parts` rather than `fileParts`: a file attached through /ls is among
+  // them and would otherwise be missing from the logs.
+  const filePartCount = promptOptions.parts.filter((part) => part.type === "file").length;
 
   return {
     promptOptions,
@@ -493,6 +458,53 @@ async function preparePromptRequest(
       fileCount: filePartCount,
     },
   };
+}
+
+/** Agent, model and variant a prompt is sent with. */
+type PromptSelection = {
+  agent: string | undefined;
+  providerID: string;
+  modelID: string;
+  variant?: string | undefined;
+};
+
+/** Text first, then files; files without text get a minimal placeholder prompt. */
+function buildPromptOptions(
+  session: { id: string; directory: string },
+  input: IncomingPrompt,
+  attachmentPart: FilePartInput | null,
+  selection: PromptSelection,
+): PromptRequestOptions {
+  const parts: Array<TextPartInput | FilePartInput> = [];
+  if (input.text.trim().length > 0) {
+    parts.push({ type: "text", text: input.text });
+  }
+  parts.push(...input.fileParts);
+  if (attachmentPart) {
+    parts.push(attachmentPart);
+  }
+
+  if (!parts.some((part) => part.type === "text") && input.fileParts.length > 0) {
+    const attachmentText =
+      input.fileParts.length === 1 ? "See attached file" : "See attached files";
+    parts.unshift({ type: "text", text: attachmentText });
+  }
+
+  const promptOptions: PromptRequestOptions = {
+    sessionID: session.id,
+    directory: session.directory,
+    parts,
+    ...(selection.agent ? { agent: selection.agent } : {}),
+  };
+
+  if (selection.providerID && selection.modelID) {
+    promptOptions.model = { providerID: selection.providerID, modelID: selection.modelID };
+    if (selection.variant) {
+      promptOptions.variant = selection.variant;
+    }
+  }
+
+  return promptOptions;
 }
 
 export type PromptRunDeps = Pick<
@@ -565,18 +577,17 @@ export async function admitPromptToInbox(
     logger.info(
       `[Bot] Sending prompt to the session inbox: session=${currentSession.id}, delivery=${delivery}, fileCount=${prepared.promptErrorLogContext.fileCount}`,
     );
-    const { data, error } = await opencodeV2Client.session.promptAsync({
-      ...prepared.promptOptions,
+    const inboxId = await sendToSessionInbox(
+      prepared.promptOptions,
       delivery,
-    });
-    if (error || !data) {
-      logger.error("[Bot] OpenCode refused the inbox prompt", prepared.promptErrorLogContext);
-      logger.error("[Bot] Inbox prompt error details:", formatErrorDetails(error, 6000));
+      prepared.promptErrorLogContext,
+    );
+    if (!inboxId) {
       await ctx.reply(t("bot.prompt_send_error"));
       return null;
     }
 
-    return { sessionId: currentSession.id, inboxId: data.inboxID };
+    return { sessionId: currentSession.id, inboxId };
   } catch (err) {
     logger.error(`[Bot] Failed to send prompt to the inbox: session=${currentSession.id}`, err);
     await ctx.reply(t("bot.prompt_send_error"));
@@ -584,11 +595,85 @@ export async function admitPromptToInbox(
   }
 }
 
-async function prepareTelegramPhotos(
-  ctx: Context,
+/** Sends a prepared prompt into the session inbox; returns its inbox id, or null (logged). */
+async function sendToSessionInbox(
+  promptOptions: PromptRequestOptions,
+  delivery: V2InboxDelivery,
+  logContext: Record<string, string | number>,
+): Promise<string | null> {
+  const { data, error } = await opencodeV2Client.session.promptAsync({
+    ...promptOptions,
+    delivery,
+  });
+  if (error || !data) {
+    logger.error("[Bot] OpenCode refused the inbox prompt", logContext);
+    logger.error("[Bot] Inbox prompt error details:", formatErrorDetails(error, 6000));
+    return null;
+  }
+  return data.inboxID;
+}
+
+type HandedOverPromptDeps = Pick<ProcessPromptDeps, "downloadFile" | "getModelCapabilities">;
+
+/**
+ * Turns a prompt handed over at /detach into the OpenCode request for that session, with
+ * the selection taken at /detach. Nothing is posted to the chat and no /ls file rides
+ * along; photos the model cannot read are dropped as the attached queue drops them.
+ * Returns null when nothing is left to send.
+ */
+export async function prepareHandedOverPrompt(
+  api: Context["api"],
   input: IncomingPrompt,
-  deps: ProcessPromptDeps,
+  session: { id: string; directory: string },
+  selection: HandoverSelection,
+  deps: HandedOverPromptDeps,
+): Promise<PromptRequestOptions | null> {
+  const preparedInput = await prepareTelegramPhotos(api, input, deps, selection, null);
+  if (!preparedInput) {
+    return null;
+  }
+
+  const promptOptions = buildPromptOptions(session, preparedInput, null, selection);
+  return promptOptions.parts.length > 0 ? promptOptions : null;
+}
+
+/**
+ * Sends a prompt handed over at /detach into that session's OpenCode V2 inbox. Returns
+ * the inbox id, or null when it was not sent; failures are logged, not posted.
+ */
+export async function admitHandedOverPromptToInbox(
+  api: Context["api"],
+  input: IncomingPrompt,
+  session: { id: string; directory: string },
+  selection: HandoverSelection,
+  delivery: V2InboxDelivery,
+  deps: HandedOverPromptDeps,
+): Promise<string | null> {
+  try {
+    const promptOptions = await prepareHandedOverPrompt(api, input, session, selection, deps);
+    if (!promptOptions) {
+      return null;
+    }
+
+    logger.info(
+      `[Bot] Sending handed-over prompt to the session inbox: session=${session.id}, delivery=${delivery}`,
+    );
+    return await sendToSessionInbox(promptOptions, delivery, { sessionId: session.id });
+  } catch (err) {
+    logger.error(`[Bot] Failed to send handed-over prompt to the inbox: session=${session.id}`, err);
+    return null;
+  }
+}
+
+/** Replies in the chat while a prompt is prepared; null for a prompt that shows nothing. */
+type PromptPreparationReply = ((text: string) => Promise<unknown>) | null;
+
+async function prepareTelegramPhotos(
+  api: Context["api"],
+  input: IncomingPrompt,
+  deps: HandedOverPromptDeps,
   storedModel: { providerID: string; modelID: string },
+  reply: PromptPreparationReply,
 ): Promise<IncomingPrompt | null> {
   if (input.photos.length === 0) {
     return input;
@@ -602,7 +687,7 @@ async function prepareTelegramPhotos(
       `[Bot] Model ${storedModel.providerID}/${storedModel.modelID} doesn't support image input`,
     );
     const onlyStandalone = input.photos.every((photo) => photo.source === "standalone");
-    await ctx.reply(
+    await reply?.(
       input.photos.some((photo) => photo.source === "album")
         ? t("bot.media_group_not_processed")
         : t("bot.photo_model_no_image"),
@@ -614,7 +699,7 @@ async function prepareTelegramPhotos(
   }
 
   const isAlbum = input.photos.every((photo) => photo.source === "album");
-  await ctx.reply(
+  await reply?.(
     isAlbum || input.photos.length > 1 ? t("bot.files_downloading") : t("bot.photo_downloading"),
   );
 
@@ -623,7 +708,7 @@ async function prepareTelegramPhotos(
   try {
     const downloadedParts: FilePartInput[] = [];
     for (const photo of input.photos) {
-      const downloaded = await downloadFile(ctx.api, photo.fileId);
+      const downloaded = await downloadFile(api, photo.fileId);
       downloadedParts.push({
         type: "file",
         mime: "image/jpeg",
@@ -640,7 +725,7 @@ async function prepareTelegramPhotos(
     };
   } catch (err) {
     logger.error("[Bot] Error downloading Telegram photo input:", err);
-    await ctx.reply(isAlbum ? t("bot.media_group_download_error") : t("bot.photo_download_error"));
+    await reply?.(isAlbum ? t("bot.media_group_download_error") : t("bot.photo_download_error"));
     return null;
   }
 }

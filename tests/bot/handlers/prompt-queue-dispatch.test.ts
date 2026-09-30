@@ -8,6 +8,12 @@ const getPromptQueueModeMock = vi.hoisted(() => vi.fn());
 const isForegroundBusyMock = vi.hoisted(() => vi.fn());
 const getKeyboardMock = vi.hoisted(() => vi.fn());
 const sendBotTextMock = vi.hoisted(() => vi.fn());
+const getCurrentSettingsSessionMock = vi.hoisted(() => vi.fn());
+const handOverPreparedPromptMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../../../src/bot/handlers/prompt-handover.js", () => ({
+  handOverPreparedPrompt: handOverPreparedPromptMock,
+}));
 
 vi.mock("../../../src/bot/handlers/prompt.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../src/bot/handlers/prompt.js")>()),
@@ -16,6 +22,7 @@ vi.mock("../../../src/bot/handlers/prompt.js", async (importOriginal) => ({
 
 vi.mock("../../../src/app/stores/settings-store.js", () => ({
   getPromptQueueMode: getPromptQueueModeMock,
+  getCurrentSession: getCurrentSettingsSessionMock,
 }));
 
 vi.mock("../../../src/app/services/run-control-service.js", () => ({
@@ -27,12 +34,15 @@ vi.mock("../../../src/bot/messages/telegram-text.js", () => ({
 }));
 
 import { MAX_QUEUED_PROMPTS, promptQueue } from "../../../src/app/managers/prompt-queue-manager.js";
+import { promptHandover } from "../../../src/app/managers/prompt-handover-manager.js";
 import {
   __resetPromptQueueDispatchForTests,
   dispatchNextQueuedPrompt,
   initializePromptQueueDispatch,
   shouldSuggestPromptQueue as shouldSuggestPromptQueueInput,
+  takeArrivalTicket,
   tryEnqueuePrompt as tryEnqueueInput,
+  tryEnqueuePromptIfBusy,
 } from "../../../src/bot/handlers/prompt-queue-dispatch.js";
 import type { AppContainer } from "../../../src/app/bootstrap/app-container.js";
 import { createTestAppContainer } from "../../helpers/app-container.js";
@@ -66,7 +76,10 @@ function shouldSuggestPromptQueue(text: string): boolean {
 describe("bot/handlers/prompt-queue-dispatch", () => {
   beforeEach(() => {
     promptQueue.__resetForTests();
+    promptHandover.__resetForTests();
     __resetPromptQueueDispatchForTests();
+    getCurrentSettingsSessionMock.mockReset().mockReturnValue(undefined);
+    handOverPreparedPromptMock.mockReset().mockResolvedValue(true);
     replyMock = vi.fn().mockResolvedValue(undefined);
     processUserPromptMock.mockReset().mockResolvedValue(true);
     getPromptQueueModeMock.mockReset().mockReturnValue("queue");
@@ -74,6 +87,80 @@ describe("bot/handlers/prompt-queue-dispatch", () => {
     getKeyboardMock.mockReset().mockReturnValue(KEYBOARD);
     sendBotTextMock.mockReset().mockResolvedValue(undefined);
     initializePromptQueueDispatch(DEPS);
+  });
+
+  describe("prompts handed over at /detach", () => {
+    const SESSION = { id: "ses-1", title: "Session", directory: "D:/repo" };
+    const SELECTION = { agent: "build", providerID: "p", modelID: "m" };
+
+    function handOverOnePrompt(): void {
+      promptHandover.recordDetach(SESSION, SELECTION);
+      promptHandover.addPrompt("ses-1", { ...createIncomingPrompt("handed over"), selection: SELECTION });
+    }
+
+    it("queues a message sent after re-attaching behind them while the session is idle", async () => {
+      handOverOnePrompt();
+      getCurrentSettingsSessionMock.mockReturnValue(SESSION);
+
+      await expect(
+        tryEnqueuePromptIfBusy(makeContext(), createIncomingPrompt("after re-attach")),
+      ).resolves.toBe(true);
+      await dispatchNextQueuedPrompt();
+
+      expect(promptQueue.list().map((item) => item.text)).toEqual(["after re-attach"]);
+      expect(processUserPromptMock).not.toHaveBeenCalled();
+    });
+
+    it("leaves messages of another session alone", async () => {
+      handOverOnePrompt();
+      getCurrentSettingsSessionMock.mockReturnValue({ ...SESSION, id: "ses-2" });
+
+      await expect(
+        tryEnqueuePromptIfBusy(makeContext(), createIncomingPrompt("elsewhere")),
+      ).resolves.toBe(false);
+    });
+
+    it("takes an arrival ticket only while the message would wait", () => {
+      getCurrentSettingsSessionMock.mockReturnValue(SESSION);
+      expect(takeArrivalTicket()).toBeUndefined();
+
+      isForegroundBusyMock.mockReturnValue(true);
+      expect(takeArrivalTicket()).toEqual({ sessionId: "ses-1", detachSeq: 0 });
+
+      getPromptQueueModeMock.mockReturnValue("off");
+      expect(takeArrivalTicket()).toBeUndefined();
+    });
+
+    it("hands a message prepared across /detach over to its session instead of queueing it", async () => {
+      getCurrentSettingsSessionMock.mockReturnValue(SESSION);
+      isForegroundBusyMock.mockReturnValue(true);
+      const ticket = takeArrivalTicket();
+      promptHandover.recordDetach(SESSION, SELECTION);
+      getCurrentSettingsSessionMock.mockReturnValue(undefined);
+      isForegroundBusyMock.mockReturnValue(false);
+
+      const ctx = makeContext();
+      const input = createIncomingPrompt("transcribed");
+
+      await expect(tryEnqueuePromptIfBusy(ctx, input, ticket)).resolves.toBe(true);
+
+      expect(handOverPreparedPromptMock).toHaveBeenCalledWith(ctx, ticket, input);
+      expect(promptQueue.size()).toBe(0);
+      expect(replyMock).not.toHaveBeenCalled();
+    });
+
+    it("keeps the normal path for a ticket whose session was not detached since", async () => {
+      getCurrentSettingsSessionMock.mockReturnValue(SESSION);
+      isForegroundBusyMock.mockReturnValue(true);
+      const ticket = takeArrivalTicket();
+
+      await expect(
+        tryEnqueuePromptIfBusy(makeContext(), createIncomingPrompt("still busy"), ticket),
+      ).resolves.toBe(true);
+
+      expect(handOverPreparedPromptMock).not.toHaveBeenCalled();
+      expect(promptQueue.list().map((item) => item.text)).toEqual(["still busy"]);
+    });
   });
 
   describe("tryEnqueuePrompt", () => {

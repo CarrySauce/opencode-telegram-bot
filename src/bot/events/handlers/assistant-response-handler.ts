@@ -6,6 +6,7 @@ import {
 } from "../../../app/stores/settings-store.js";
 import { clearPromptResponseMode, startInboxPromptRun } from "../../handlers/prompt.js";
 import { promptQueue, type QueuedPrompt } from "../../../app/managers/prompt-queue-manager.js";
+import { promptHandover } from "../../../app/managers/prompt-handover-manager.js";
 import { buildExternalUserInputNotification } from "../../../app/services/external-user-input-service.js";
 import { getCurrentSession } from "../../../app/services/session-service.js";
 import { sendBotText } from "../../messages/telegram-text.js";
@@ -487,6 +488,8 @@ export function registerAssistantResponseHandlers(deps: AssistantResponseDeps): 
       }
       // The admission of this prompt may still be on its way back from OpenCode.
       promptQueue.rememberDeliveredInboxId(messageId);
+      // A prompt handed over at /detach can no longer be withdrawn once picked up.
+      promptHandover.forgetInboxId(messageId);
 
       const destination = policy.getDestination(sessionId);
       if (!destination) {

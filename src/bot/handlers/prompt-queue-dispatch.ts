@@ -5,6 +5,7 @@ import {
   promptQueue,
   type QueuedPromptInput,
 } from "../../app/managers/prompt-queue-manager.js";
+import { promptHandover, type ArrivalTicket } from "../../app/managers/prompt-handover-manager.js";
 import type { IncomingPrompt } from "../../app/types/prompt.js";
 import { buildExternalUserInputNotification } from "../../app/services/external-user-input-service.js";
 import {
@@ -25,6 +26,7 @@ import {
   startInboxPromptRun,
   type ProcessPromptDeps,
 } from "./prompt.js";
+import { handOverPreparedPrompt } from "./prompt-handover.js";
 
 // The queue helpers are called from the guard and the media handlers without
 // deps, so the dispatcher receives them once at startup instead. Until then the
@@ -46,7 +48,13 @@ export function initializePromptQueueDispatch(deps: ProcessPromptDeps): void {
 }
 
 function isBusy(): boolean {
-  return promptDeps !== null && isForegroundBusy(promptDeps);
+  return promptDeps !== null && (isForegroundBusy(promptDeps) || waitsForHandedOverPrompts());
+}
+
+/** Prompts handed over to the current session at /detach go before anything sent since. */
+function waitsForHandedOverPrompts(): boolean {
+  const session = getCurrentSession();
+  return Boolean(session && promptHandover.hasPendingPrompts(session.id));
 }
 
 function isPromptQueueEnabled(): boolean {
@@ -150,10 +158,17 @@ async function sendPromptToInbox(
   const admitted = await admitPromptToInbox(ctx, input, deps, delivery);
   if (!admitted) {
     promptQueue.releaseReservation(reservationId);
+    promptQueue.releaseHandedOverReservation(reservationId);
     return;
   }
 
   const inbox = { sessionId: admitted.sessionId, inboxId: admitted.inboxId, delivery } as const;
+
+  // Handed over by /detach while on its way: it stays with that session, and nothing is shown.
+  if (promptQueue.releaseHandedOverReservation(reservationId)) {
+    promptHandover.addInboxEntry(inbox);
+    return;
+  }
 
   // OpenCode may deliver the prompt before the send returns (the turn had just ended):
   // the pickup has already been shown, so there is no button, only the run to open.
@@ -196,10 +211,30 @@ async function replyInboxAdmission(ctx: Context, delivery: "steer" | "queue"): P
   );
 }
 
+/**
+ * The session a message arriving now would wait for, taken before the message is
+ * prepared; undefined when it would not wait.
+ */
+export function takeArrivalTicket(): ArrivalTicket | undefined {
+  const session = getCurrentSession();
+  if (!session || !isPromptQueueEnabled() || !isBusy()) {
+    return undefined;
+  }
+  return promptHandover.takeTicket(session.id);
+}
+
+/**
+ * Queues a prepared prompt when the session is busy. A message whose preparation
+ * outlived /detach goes to the session it arrived for, as one sent right before.
+ */
 export async function tryEnqueuePromptIfBusy(
   ctx: Context,
   input: QueuedPromptInput,
+  ticket?: ArrivalTicket,
 ): Promise<boolean> {
+  if (ticket && promptHandover.wasDetachedSince(ticket) && isQueueablePrompt(input)) {
+    return handOverPreparedPrompt(ctx, ticket, input);
+  }
   return isBusy() && tryEnqueuePrompt(ctx, input);
 }
 

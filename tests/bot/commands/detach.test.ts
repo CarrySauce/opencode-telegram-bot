@@ -22,6 +22,7 @@ const mocked = vi.hoisted(() => ({
   foregroundMarkIdleMock: vi.fn(),
   assistantClearRunMock: vi.fn(),
   clearPromptResponseModeMock: vi.fn(),
+  handOverPromptQueueMock: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../../../src/app/stores/settings-store.js", () => ({
@@ -40,6 +41,10 @@ vi.mock("../../../src/app/services/attach-service.js", () => ({
 
 vi.mock("../../../src/bot/handlers/prompt.js", () => ({
   clearPromptResponseMode: mocked.clearPromptResponseModeMock,
+}));
+
+vi.mock("../../../src/bot/handlers/prompt-handover.js", () => ({
+  handOverPromptQueue: mocked.handOverPromptQueueMock,
 }));
 
 function createDeps() {
@@ -98,6 +103,20 @@ describe("bot/commands/detach", () => {
     mocked.foregroundMarkIdleMock.mockClear();
     mocked.assistantClearRunMock.mockClear();
     mocked.clearPromptResponseModeMock.mockClear();
+    mocked.handOverPromptQueueMock.mockClear();
+  });
+
+  it("hands waiting messages over to the session before clearing it, so none is withdrawn", async () => {
+    await detachCommand(createContext() as never, createDeps());
+
+    expect(mocked.handOverPromptQueueMock).toHaveBeenCalledWith({
+      id: "session-1",
+      title: "Long Run",
+      directory: "D:/repo",
+    });
+    expect(defined(mocked.handOverPromptQueueMock.mock.invocationCallOrder[0])).toBeLessThan(
+      defined(mocked.clearSessionMock.mock.invocationCallOrder[0]),
+    );
   });
 
   it("detaches selected session locally without stopping the OpenCode session", async () => {
@@ -183,6 +202,7 @@ describe("bot/commands/detach", () => {
     await detachCommand(ctx as never, createDeps());
 
     expect(ctx.reply).toHaveBeenCalledWith(t("detach.no_active_session"));
+    expect(mocked.handOverPromptQueueMock).not.toHaveBeenCalled();
     expect(mocked.detachAttachedSessionMock).not.toHaveBeenCalled();
     expect(mocked.clearSessionMock).not.toHaveBeenCalled();
   });

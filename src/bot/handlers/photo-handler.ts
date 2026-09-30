@@ -4,6 +4,7 @@ import { flushPendingPrompt } from "./message-merger.js";
 import { processUserPrompt, type ProcessPromptDeps } from "./prompt.js";
 import {
   rejectQueuedMediaBeforePreparation,
+  takeArrivalTicket,
   tryEnqueuePromptIfBusy,
 } from "./prompt-queue-dispatch.js";
 
@@ -22,6 +23,7 @@ export async function handlePhotoMessage(ctx: Context, deps: PhotoHandlerDeps): 
   }
 
   flushPendingPrompt(ctx.chat!.id);
+  const ticket = takeArrivalTicket();
 
   const caption = ctx.message.caption || "";
   const largestPhoto = photos[photos.length - 1];
@@ -35,11 +37,15 @@ export async function handlePhotoMessage(ctx: Context, deps: PhotoHandlerDeps): 
     return;
   }
   if (
-    await tryEnqueuePromptIfBusy(ctx, {
-      ...input,
-      displayText: caption.trim() || "[Photo]",
-      ...(largestPhoto.file_size === undefined ? {} : { mediaBytes: largestPhoto.file_size }),
-    })
+    await tryEnqueuePromptIfBusy(
+      ctx,
+      {
+        ...input,
+        displayText: caption.trim() || "[Photo]",
+        ...(largestPhoto.file_size === undefined ? {} : { mediaBytes: largestPhoto.file_size }),
+      },
+      ticket,
+    )
   ) {
     return;
   }

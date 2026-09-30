@@ -14,6 +14,7 @@ import { promptQueue } from "../../app/managers/prompt-queue-manager.js";
 import { withdrawPromptQueue } from "../../app/services/prompt-inbox-service.js";
 import { markAttachedSessionIdle } from "../../app/services/attach-service.js";
 import { clearPromptResponseMode } from "../handlers/prompt.js";
+import { withdrawAllHandedOverPrompts } from "../handlers/prompt-handover.js";
 
 export type OpencodeStopCommandDeps = Pick<
   AppContainer,
@@ -85,8 +86,10 @@ export async function opencodeStopCommand(
 
     const statusMessage = await ctx.reply(t("opencode_stop.stopping", { pid }));
 
-    // The OpenCode V2 inbox outlives the process, so waiting prompts are withdrawn first.
+    // The OpenCode V2 inbox outlives the process, so waiting prompts are withdrawn first,
+    // those handed over at /detach included.
     await withdrawPromptQueue(STOP_REASON);
+    await withdrawAllHandedOverPrompts(STOP_REASON);
 
     const stopped = await killServerProcess(pid, 5000);
     if (!stopped) {

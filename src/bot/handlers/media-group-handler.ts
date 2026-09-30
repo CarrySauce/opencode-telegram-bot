@@ -12,11 +12,13 @@ import {
   toDataUri,
 } from "../../app/services/file-download-service.js";
 import { processUserPrompt, type ProcessPromptDeps } from "./prompt.js";
+import type { ArrivalTicket } from "../../app/managers/prompt-handover-manager.js";
 import { createIncomingPrompt, type IncomingPrompt } from "../../app/types/prompt.js";
 import { flushPendingPrompt } from "./message-merger.js";
 import { handleUnsupportedMessages } from "./unsupported-message-handler.js";
 import {
   rejectQueuedMediaBeforePreparation,
+  takeArrivalTicket,
   tryEnqueuePromptIfBusy,
 } from "./prompt-queue-dispatch.js";
 
@@ -60,6 +62,8 @@ type ValidMediaGroupItem =
     };
 
 interface MediaGroupBatch {
+  /** Taken with the first item, before the album is prepared. */
+  ticket: ArrivalTicket | undefined;
   timer: ReturnType<typeof setTimeout>;
   items: PendingMediaGroupItem[];
 }
@@ -131,6 +135,7 @@ export class MediaGroupAttachmentHandler {
     }
 
     this.batches.set(key, {
+      ticket: takeArrivalTicket(),
       items: [item],
       timer: this.createFlushTimer(key),
     });
@@ -252,12 +257,16 @@ export class MediaGroupAttachmentHandler {
         .map((item) => item.caption.trim())
         .filter((caption) => caption.length > 0);
       if (
-        await tryEnqueuePromptIfBusy(replyCtx, {
-          ...createIncomingPrompt(promptText, { fileParts }),
-          displayText: captions.join(" / ") || `[Album: ${items.length} files]`,
-          fileParts,
-          ...(mediaBytes === undefined ? {} : { mediaBytes }),
-        })
+        await tryEnqueuePromptIfBusy(
+          replyCtx,
+          {
+            ...createIncomingPrompt(promptText, { fileParts }),
+            displayText: captions.join(" / ") || `[Album: ${items.length} files]`,
+            fileParts,
+            ...(mediaBytes === undefined ? {} : { mediaBytes }),
+          },
+          batch.ticket,
+        )
       ) {
         return;
       }

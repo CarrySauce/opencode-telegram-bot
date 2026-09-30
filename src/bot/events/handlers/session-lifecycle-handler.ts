@@ -4,6 +4,7 @@ import { markAttachedSessionIdle } from "../../../app/services/attach-service.js
 import { shouldSuppressUserAbortSessionError } from "../../../app/managers/abort-suppression-manager.js";
 import { clearPromptResponseMode } from "../../handlers/prompt.js";
 import { dispatchNextQueuedPrompt } from "../../handlers/prompt-queue-dispatch.js";
+import { wakePromptHandover } from "../../handlers/prompt-handover.js";
 import { resetStreamThrottle } from "../../streaming/stream-throttle.js";
 import {
   formatSessionMessage,
@@ -28,6 +29,7 @@ export function registerSessionLifecycleHandlers(deps: SessionLifecycleDeps): vo
   const { runtime, policy, summaryAggregator } = deps;
 
   summaryAggregator.setOnSessionIdle(async (sessionId, { interrupted }) => {
+    wakePromptHandover(sessionId);
     resetStreamThrottle(sessionId);
     await markAttachedSessionIdle(sessionId, deps);
     // Dropped immediately when this session is no longer current: the early
@@ -86,6 +88,7 @@ export function registerSessionLifecycleHandlers(deps: SessionLifecycleDeps): vo
   });
 
   summaryAggregator.setOnSessionError(async (sessionId, message) => {
+    wakePromptHandover(sessionId);
     await markAttachedSessionIdle(sessionId, deps);
     const destination = policy.getDestination(sessionId);
     const keepBackground = Boolean(destination) && policy.isForegroundSession(sessionId);
