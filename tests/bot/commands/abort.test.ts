@@ -74,7 +74,7 @@ function createDeps() {
 }
 
 function activateInteractionState(): void {
-  container.questionManager.startQuestions([TEST_QUESTION], "req-abort");
+  container.questionManager.startQuestions([TEST_QUESTION], "req-abort", "session-1");
   container.interactionManager.waitPermission(TEST_PERMISSION);
 }
 

@@ -29,4 +29,9 @@ export interface QuestionState {
   activeMessageId: number | null;
   messageIds: number[];
   requestID: string | null;
+  sessionId: string;
+  answeredFromTelegram: boolean;
 }
+
+/** How a question was settled outside Telegram. */
+export type QuestionSettledOutcome = "answered" | "cancelled";

@@ -2,8 +2,8 @@ import { Event, ToolState } from "@opencode-ai/sdk/v2";
 import type { Bot } from "grammy";
 import type { CodeFileData } from "../formatters/summary-formatter.js";
 import { normalizePathForDisplay, prepareCodeFile } from "../formatters/summary-formatter.js";
-import type { Question } from "../types/question.js";
-import type { PermissionRequest } from "../types/permission.js";
+import type { Question, QuestionSettledOutcome } from "../types/question.js";
+import type { PermissionReply, PermissionRequest } from "../types/permission.js";
 import type { FileChange } from "../types/summary.js";
 import { logger } from "../../utils/logger.js";
 import { extractErrorMessage } from "../../utils/opencode-error.js";
@@ -103,6 +103,12 @@ type QuestionCallback = (questions: Question[], requestID: string, sessionId: st
 
 type QuestionErrorCallback = (sessionId: string) => void;
 
+type QuestionSettledCallback = (
+  sessionId: string,
+  requestID: string,
+  outcome: QuestionSettledOutcome,
+) => void | Promise<void>;
+
 type ThinkingCallback = (update: ThinkingUpdate) => void;
 
 type ThinkingFinishedCallback = (sessionId: string, messageId: string) => void;
@@ -172,7 +178,14 @@ type SessionIdleCallback = (sessionId: string, idleInfo: SessionIdleInfo) => voi
 
 type PermissionCallback = (request: PermissionRequest) => void | Promise<void>;
 
-type PermissionRepliedCallback = (sessionId: string, requestID: string) => void | Promise<void>;
+type PermissionRepliedCallback = (
+  sessionId: string,
+  requestID: string,
+  reply: PermissionReply | null,
+) => void | Promise<void>;
+
+/** The run of the followed session or of one of its subagents ended (idle or error). */
+type SessionRunEndedCallback = (sessionId: string) => void | Promise<void>;
 
 type SessionDiffCallback = (sessionId: string, diffs: FileChange[]) => void;
 
@@ -308,6 +321,7 @@ export class SummaryAggregator {
   private onToolFileCallback: ToolFileCallback | null = null;
   private onQuestionCallback: QuestionCallback | null = null;
   private onQuestionErrorCallback: QuestionErrorCallback | null = null;
+  private onQuestionSettledCallback: QuestionSettledCallback | null = null;
   private onThinkingCallback: ThinkingCallback | null = null;
   private onThinkingFinishedCallback: ThinkingFinishedCallback | null = null;
   private onTokensCallback: TokensCallback | null = null;
@@ -320,6 +334,7 @@ export class SummaryAggregator {
   private onPermissionCallback: PermissionCallback | null = null;
   private permissionQueue: Promise<void> = Promise.resolve();
   private onPermissionRepliedCallback: PermissionRepliedCallback | null = null;
+  private onSessionRunEndedCallback: SessionRunEndedCallback | null = null;
   private onSessionDiffCallback: SessionDiffCallback | null = null;
   private onFileChangeCallback: FileChangeCallback | null = null;
   private onClearedCallback: ClearedCallback | null = null;
@@ -389,6 +404,10 @@ export class SummaryAggregator {
     this.onQuestionErrorCallback = callback;
   }
 
+  setOnQuestionSettled(callback: QuestionSettledCallback): void {
+    this.onQuestionSettledCallback = callback;
+  }
+
   setOnThinking(callback: ThinkingCallback): void {
     this.onThinkingCallback = callback;
   }
@@ -431,6 +450,10 @@ export class SummaryAggregator {
 
   setOnPermissionReplied(callback: PermissionRepliedCallback): void {
     this.onPermissionRepliedCallback = callback;
+  }
+
+  setOnSessionRunEnded(callback: SessionRunEndedCallback): void {
+    this.onSessionRunEndedCallback = callback;
   }
 
   setOnSessionDiff(callback: SessionDiffCallback): void {
@@ -601,10 +624,10 @@ export class SummaryAggregator {
         this.handleQuestionAsked(event);
         break;
       case "question.replied":
-        logger.info(`[Aggregator] Question replied: requestID=${event.properties.requestID}`);
+        this.handleQuestionSettled(event.properties, "answered");
         break;
       case "question.rejected":
-        logger.info(`[Aggregator] Question rejected: requestID=${event.properties.requestID}`);
+        this.handleQuestionSettled(event.properties, "cancelled");
         break;
       case "session.diff":
         this.handleSessionDiff(event);
@@ -2268,6 +2291,7 @@ export class SummaryAggregator {
     if (this.isTrackedChildSession(sessionID)) {
       logger.info(`[Aggregator] Subagent session became idle: ${sessionID}`);
       this.setSubagentTerminalStatus(sessionID, "completed");
+      this.emitSessionRunEnded(sessionID);
       return;
     }
 
@@ -2276,6 +2300,7 @@ export class SummaryAggregator {
     }
 
     logger.info(`[Aggregator] Session became idle: ${sessionID}`);
+    this.emitSessionRunEnded(sessionID);
     this.liveTurnStartedAt = null;
     this.acceptsSubagentEvents = false;
     this.retireForegroundSubagents();
@@ -2333,14 +2358,16 @@ export class SummaryAggregator {
     if (sessionID && this.isTrackedChildSession(sessionID)) {
       logger.warn(`[Aggregator] Subagent session error: ${sessionID}: ${message}`);
       this.setSubagentTerminalStatus(sessionID, "error", message);
+      this.emitSessionRunEnded(sessionID);
       return;
     }
 
-    if (sessionID !== this.currentSessionId) {
+    if (!sessionID || sessionID !== this.currentSessionId) {
       return;
     }
 
     logger.warn(`[Aggregator] Session error: ${sessionID}: ${message}`);
+    this.emitSessionRunEnded(sessionID);
     this.liveTurnStartedAt = null;
     this.acceptsSubagentEvents = false;
     this.retireForegroundSubagents();
@@ -2360,15 +2387,18 @@ export class SummaryAggregator {
     },
   ): void {
     const { id, sessionID, questions } = event.properties;
+    const isTrackedChild = this.isTrackedChildSession(sessionID);
 
-    if (sessionID !== this.currentSessionId) {
+    if (sessionID !== this.currentSessionId && !isTrackedChild) {
       logger.debug(
         `[Aggregator] Ignoring question.asked for different session: ${sessionID} (current: ${this.currentSessionId})`,
       );
       return;
     }
 
-    logger.info(`[Aggregator] Question asked: requestID=${id}, questions=${questions.length}`);
+    logger.info(
+      `[Aggregator] Question asked: requestID=${id}, questions=${questions.length}, subagent=${isTrackedChild}`,
+    );
 
     if (this.onQuestionCallback) {
       const callback = this.onQuestionCallback;
@@ -2380,6 +2410,47 @@ export class SummaryAggregator {
         }
       }, true);
     }
+  }
+
+  private handleQuestionSettled(
+    properties: { sessionID: string; requestID: string },
+    outcome: QuestionSettledOutcome,
+  ): void {
+    const { sessionID, requestID } = properties;
+    if (sessionID !== this.currentSessionId && !this.isTrackedChildSession(sessionID)) {
+      logger.debug(
+        `[Aggregator] Ignoring settled question for different session: ${sessionID} (current: ${this.currentSessionId})`,
+      );
+      return;
+    }
+
+    logger.info(`[Aggregator] Question settled: requestID=${requestID}, outcome=${outcome}`);
+
+    if (this.onQuestionSettledCallback) {
+      const callback = this.onQuestionSettledCallback;
+      this.scheduleOutbound(async () => {
+        try {
+          await callback(sessionID, requestID, outcome);
+        } catch (err) {
+          logger.error("[Aggregator] Error in question settled callback:", err);
+        }
+      }, true);
+    }
+  }
+
+  private emitSessionRunEnded(sessionID: string): void {
+    if (!this.onSessionRunEndedCallback) {
+      return;
+    }
+
+    const callback = this.onSessionRunEndedCallback;
+    this.scheduleOutbound(async () => {
+      try {
+        await callback(sessionID);
+      } catch (err) {
+        logger.error("[Aggregator] Error in session run ended callback:", err);
+      }
+    }, true);
   }
 
   private handleSessionDiff(
@@ -2448,6 +2519,8 @@ export class SummaryAggregator {
     },
   ): void {
     const { sessionID, requestID } = event.properties;
+    // An older server may leave the decision out; the prompt then ends without naming it.
+    const reply: PermissionReply | null = event.properties.reply ?? null;
     const isCurrent = sessionID === this.currentSessionId;
     const isTrackedChild = this.isTrackedChildSession(sessionID);
 
@@ -2458,13 +2531,15 @@ export class SummaryAggregator {
       return;
     }
 
-    logger.info(`[Aggregator] Permission replied: requestID=${requestID}`);
+    logger.info(
+      `[Aggregator] Permission replied: requestID=${requestID}, reply=${reply ?? "unknown"}`,
+    );
 
     if (this.onPermissionRepliedCallback) {
       const callback = this.onPermissionRepliedCallback;
       this.scheduleOutbound(async () => {
         try {
-          await callback(sessionID, requestID);
+          await callback(sessionID, requestID, reply);
         } catch (err) {
           logger.error("[Aggregator] Error in permission replied callback:", err);
         }

@@ -400,6 +400,24 @@ describe("opencode/events", () => {
     await subscription;
   });
 
+  it("runs the reconnect callback when the client reconnects inside one subscription", async () => {
+    const connected = { type: "server.connected", properties: {} };
+    subscribeMock.mockImplementationOnce(async (_params, options: { signal: AbortSignal }) => {
+      return { stream: createOpenStream([connected, connected], options.signal) };
+    });
+    const onReconnect = vi.fn();
+
+    const subscription = subscribeToEvents("D:/repo", vi.fn(), onReconnect);
+
+    await vi.waitFor(() => {
+      expect(onReconnect).toHaveBeenCalledTimes(1);
+    });
+    expect(subscribeMock).toHaveBeenCalledTimes(1);
+
+    stopEventListening();
+    await subscription;
+  });
+
   it("does not run the reconnect callback on the first connection", async () => {
     const callback = vi.fn();
     const onReconnect = vi.fn();

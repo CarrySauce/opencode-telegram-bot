@@ -1,7 +1,15 @@
 import type { AppContainer } from "../../app/bootstrap/app-container.js";
 import type { AttachPresentationDeps } from "../../app/services/attach-service.js";
-import { showPermissionRequest, type PermissionMenuDeps } from "../menus/permission-menu.js";
-import { showCurrentQuestion, type QuestionMenuDeps } from "../menus/question-menu.js";
+import {
+  applyPermissionPromptChanges,
+  showPermissionRequest,
+  type PermissionMenuDeps,
+} from "../menus/permission-menu.js";
+import {
+  closeQuestionSettledOutside,
+  showCurrentQuestion,
+  type QuestionMenuDeps,
+} from "../menus/question-menu.js";
 
 type AttachPresentationFactoryDeps = Pick<AppContainer, "keyboardManager" | "pinnedMessageManager"> &
   PermissionMenuDeps &
@@ -51,5 +59,9 @@ export function createAttachPresentation(
     showCurrentQuestion: (api, chatId) => showCurrentQuestion(api, chatId, deps),
     showPermissionRequest: (api, chatId, request) =>
       showPermissionRequest(api, chatId, request, deps),
+    applyPermissionPromptChanges: (api, chatId, changes) =>
+      applyPermissionPromptChanges(api, chatId, changes, deps),
+    closeQuestionSettledOutside: (api, chatId) =>
+      closeQuestionSettledOutside(api, chatId, "answered", deps),
   };
 }

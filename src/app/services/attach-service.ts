@@ -2,7 +2,7 @@ import type { Bot, Context } from "grammy";
 import { opencodeClient } from "../../opencode/client.js";
 import { isOpencodeServerHealthy } from "../../opencode/ready-refresh.js";
 import type { AppContainer } from "../bootstrap/app-container.js";
-import type { PermissionRequest } from "../types/permission.js";
+import type { PermissionPromptChange, PermissionRequest } from "../types/permission.js";
 import type { SessionInfo } from "../types/session.js";
 import { clearSession, getCurrentSession } from "./session-service.js";
 import { getCurrentProject } from "../stores/settings-store.js";
@@ -30,7 +30,20 @@ export interface AttachPresentationDeps {
     chatId: number,
     request: PermissionRequest,
   ): Promise<void>;
+  applyPermissionPromptChanges(
+    api: Bot<Context>["api"],
+    chatId: number,
+    changes: PermissionPromptChange[],
+  ): Promise<void>;
+  closeQuestionSettledOutside(api: Bot<Context>["api"], chatId: number): Promise<void>;
 }
+
+type PendingQuestion = NonNullable<
+  Awaited<ReturnType<typeof opencodeClient.question.list>>["data"]
+>[number];
+type PendingPermission = NonNullable<
+  Awaited<ReturnType<typeof opencodeClient.permission.list>>["data"]
+>[number];
 
 let attachPresentation: AttachPresentationDeps | null = null;
 
@@ -91,13 +104,7 @@ async function syncPinnedAttachState(deps: AttachStateDeps): Promise<void> {
   await attachPresentation.syncAttachState(attached !== null, attached?.busy ?? false);
 }
 
-async function restorePendingQuestion(
-  deps: AttachRestoreDeps,
-  bot: Bot<Context>,
-  chatId: number,
-  sessionId: string,
-  directory: string,
-): Promise<boolean> {
+async function listPendingQuestions(directory: string): Promise<PendingQuestion[] | null> {
   const { data, error } = await opencodeClient.question.list({
     directory,
   });
@@ -108,28 +115,13 @@ async function restorePendingQuestion(
     } else {
       logger.warn("[Attach] Failed to load pending questions during attach:", error);
     }
-    return false;
+    return null;
   }
 
-  const pendingQuestion = data.find((request) => request.sessionID === sessionId);
-  if (!pendingQuestion || !attachPresentation) {
-    return false;
-  }
-
-  deps.questionManager.startQuestions(pendingQuestion.questions, pendingQuestion.id);
-  await attachPresentation.showCurrentQuestion(bot.api, chatId);
-  return true;
+  return data;
 }
 
-async function restorePendingPermissions(
-  deps: AttachRestoreDeps,
-  bot: Bot<Context>,
-  chatId: number,
-  sessionId: string,
-  directory: string,
-  questionActive: boolean,
-  isAlreadyTracked: (request: PermissionRequest) => boolean = () => false,
-): Promise<number> {
+async function listPendingPermissions(directory: string): Promise<PendingPermission[] | null> {
   const { data, error } = await opencodeClient.permission.list({
     directory,
   });
@@ -140,17 +132,82 @@ async function restorePendingPermissions(
     } else {
       logger.warn("[Attach] Failed to load pending permissions during attach:", error);
     }
-    return 0;
+    return null;
   }
 
-  const pendingPermissions: typeof data = [];
-  for (const request of data) {
-    if (isAlreadyTracked(request)) continue;
-    const chain = await resolveSessionParentChain(request.sessionID, directory, new Set([sessionId]));
-    if (!chain) continue;
-    for (const link of chain.links.reverse()) {
-      deps.summaryAggregator.registerRestoredPermissionChild(link.child, link.parent);
+  return data;
+}
+
+/**
+ * Whether a pending request belongs to the followed session or one of its subagents.
+ * The subagent links found on the way are registered, so its later events are followed.
+ */
+async function belongsToFollowedSession(
+  deps: AttachRestoreDeps,
+  requestSessionId: string,
+  sessionId: string,
+  directory: string,
+): Promise<boolean> {
+  const chain = await resolveSessionParentChain(requestSessionId, directory, new Set([sessionId]));
+  if (!chain) {
+    return false;
+  }
+
+  for (const link of chain.links.reverse()) {
+    deps.summaryAggregator.registerRestoredPermissionChild(link.child, link.parent);
+  }
+  return true;
+}
+
+/**
+ * Shows the first pending poll of the followed session or its subagents and queues the
+ * rest, in OpenCode's order. True when a poll was shown or queued.
+ */
+async function restorePendingQuestions(
+  deps: AttachRestoreDeps,
+  bot: Bot<Context>,
+  chatId: number,
+  sessionId: string,
+  directory: string,
+  pending: PendingQuestion[],
+  isAlreadyTracked: (requestID: string) => boolean = () => false,
+): Promise<boolean> {
+  if (!attachPresentation) {
+    return false;
+  }
+
+  let restored = false;
+  for (const request of pending) {
+    if (isAlreadyTracked(request.id)) continue;
+    if (!(await belongsToFollowedSession(deps, request.sessionID, sessionId, directory))) continue;
+
+    const shown =
+      !deps.questionManager.isActive() &&
+      deps.questionManager.startQuestions(request.questions, request.id, request.sessionID);
+    if (shown) {
+      await attachPresentation.showCurrentQuestion(bot.api, chatId);
+    } else {
+      deps.interactionManager.waitQuestion(request.questions, request.id, request.sessionID);
     }
+    restored = true;
+  }
+
+  return restored;
+}
+
+async function restorePendingPermissions(
+  deps: AttachRestoreDeps,
+  bot: Bot<Context>,
+  chatId: number,
+  sessionId: string,
+  directory: string,
+  pending: PendingPermission[],
+  isAlreadyTracked: (request: PermissionRequest) => boolean = () => false,
+): Promise<number> {
+  const pendingPermissions: PendingPermission[] = [];
+  for (const request of pending) {
+    if (isAlreadyTracked(request)) continue;
+    if (!(await belongsToFollowedSession(deps, request.sessionID, sessionId, directory))) continue;
     pendingPermissions.push(request);
   }
   if (!attachPresentation) {
@@ -158,7 +215,7 @@ async function restorePendingPermissions(
   }
 
   for (const request of pendingPermissions) {
-    if (questionActive) {
+    if (deps.questionManager.isActive()) {
       deps.interactionManager.waitPermission(request);
     } else {
       await attachPresentation.showPermissionRequest(bot.api, chatId, request);
@@ -166,6 +223,70 @@ async function restorePendingPermissions(
   }
 
   return pendingPermissions.length;
+}
+
+/** Requests on screen or waiting at the moment OpenCode's pending lists were requested. */
+interface TrackedRequestsSnapshot {
+  shownQuestionId: string | null;
+  waitingQuestionIds: string[];
+  shownPermissionIds: string[];
+  waitingPermissionIds: string[];
+}
+
+function snapshotTrackedRequests(deps: RestoreAfterReconnectDeps): TrackedRequestsSnapshot {
+  return {
+    shownQuestionId: deps.questionManager.getRequestID(),
+    waitingQuestionIds: deps.interactionManager.getWaitingQuestionRequestIds(),
+    shownPermissionIds: deps.permissionManager.getSettleableRequestIds(),
+    waitingPermissionIds: deps.interactionManager.getWaitingPermissionRequestIds(),
+  };
+}
+
+/**
+ * After a reconnect, prompts on screen that OpenCode no longer has pending were settled
+ * while the stream was down: they end as answered outside Telegram, and waiting requests
+ * that are gone leave the queue. Only requests tracked before the lists were requested
+ * are checked — one that arrived meanwhile is missing from the lists without being
+ * settled. Answers being sent from Telegram are left to that send.
+ */
+async function settleRequestsGoneWhileDisconnected(
+  deps: RestoreAfterReconnectDeps,
+  tracked: TrackedRequestsSnapshot,
+  questions: PendingQuestion[] | null,
+  permissions: PendingPermission[] | null,
+): Promise<void> {
+  if (questions) {
+    const pendingIds = new Set(questions.map((request) => request.id));
+    for (const requestID of tracked.waitingQuestionIds) {
+      if (!pendingIds.has(requestID)) deps.interactionManager.dropWaitingQuestion(requestID);
+    }
+
+    const shownId = tracked.shownQuestionId;
+    if (
+      shownId &&
+      !pendingIds.has(shownId) &&
+      deps.questionManager.getRequestID() === shownId &&
+      !deps.questionManager.isAnsweredFromTelegram() &&
+      attachPresentation
+    ) {
+      await attachPresentation.closeQuestionSettledOutside(deps.bot.api, deps.chatId);
+    }
+  }
+
+  if (permissions) {
+    const pendingIds = new Set(permissions.map((request) => request.id));
+    for (const requestID of tracked.waitingPermissionIds) {
+      if (!pendingIds.has(requestID)) deps.interactionManager.dropWaitingPermission(requestID);
+    }
+
+    const settleable = new Set(deps.permissionManager.getSettleableRequestIds());
+    const changes = tracked.shownPermissionIds
+      .filter((requestID) => !pendingIds.has(requestID) && settleable.has(requestID))
+      .flatMap((requestID) => deps.permissionManager.settleRequest(requestID, null));
+    if (changes.length > 0 && attachPresentation) {
+      await attachPresentation.applyPermissionPromptChanges(deps.bot.api, deps.chatId, changes);
+    }
+  }
 }
 
 export async function attachToSession(deps: AttachSessionDeps): Promise<AttachSessionResult> {
@@ -219,16 +340,29 @@ export async function attachToSession(deps: AttachSessionDeps): Promise<AttachSe
     !questionManager.isActive() &&
     !permissionManager.isActive()
   ) {
-    restoredQuestion = await restorePendingQuestion(deps, bot, chatId, session.id, session.directory);
+    const pendingQuestions = await listPendingQuestions(session.directory);
+    restoredQuestion = pendingQuestions
+      ? await restorePendingQuestions(
+          deps,
+          bot,
+          chatId,
+          session.id,
+          session.directory,
+          pendingQuestions,
+        )
+      : false;
 
-    restoredPermissions = await restorePendingPermissions(
-      deps,
-      bot,
-      chatId,
-      session.id,
-      session.directory,
-      restoredQuestion,
-    );
+    const pendingPermissions = await listPendingPermissions(session.directory);
+    restoredPermissions = pendingPermissions
+      ? await restorePendingPermissions(
+          deps,
+          bot,
+          chatId,
+          session.id,
+          session.directory,
+          pendingPermissions,
+        )
+      : 0;
   }
 
   return {
@@ -311,8 +445,9 @@ async function dropSavedSessionIfMissing(
 
 /**
  * The event stream does not replay what was missed while it was down, so after a reconnect
- * the attached session's pending question and permissions are loaded again. Anything
- * already on screen or waiting is left alone.
+ * the prompts on screen are checked against what OpenCode still has pending, and the
+ * followed session's pending questions and permissions are loaded again. Anything still
+ * on screen or waiting is left alone.
  */
 export async function restorePendingInteractionsAfterReconnect(
   deps: RestoreAfterReconnectDeps,
@@ -322,22 +457,42 @@ export async function restorePendingInteractionsAfterReconnect(
     return;
   }
 
-  const questionShown =
-    deps.questionManager.isActive() || deps.interactionManager.getWaitingKind() === "question";
-  const restoredQuestion = questionShown
-    ? false
-    : await restorePendingQuestion(deps, deps.bot, deps.chatId, attached.sessionId, attached.directory);
+  const tracked = snapshotTrackedRequests(deps);
+  const [pendingQuestions, pendingPermissions] = await Promise.all([
+    listPendingQuestions(attached.directory),
+    listPendingPermissions(attached.directory),
+  ]);
 
-  const restoredPermissions = await restorePendingPermissions(
-    deps,
-    deps.bot,
-    deps.chatId,
-    attached.sessionId,
-    attached.directory,
-    questionShown || restoredQuestion,
-    (request) =>
-      deps.permissionManager.hasRequest(request.id) || deps.permissionManager.isResolved(request.id),
-  );
+  await settleRequestsGoneWhileDisconnected(deps, tracked, pendingQuestions, pendingPermissions);
+
+  const restoredQuestion = pendingQuestions
+    ? await restorePendingQuestions(
+        deps,
+        deps.bot,
+        deps.chatId,
+        attached.sessionId,
+        attached.directory,
+        pendingQuestions,
+        (requestID) =>
+          deps.questionManager.getRequestID() === requestID ||
+          deps.interactionManager.isWaitingOrReleasing(requestID),
+      )
+    : false;
+
+  const restoredPermissions = pendingPermissions
+    ? await restorePendingPermissions(
+        deps,
+        deps.bot,
+        deps.chatId,
+        attached.sessionId,
+        attached.directory,
+        pendingPermissions,
+        (request) =>
+          deps.permissionManager.hasRequest(request.id) ||
+          deps.permissionManager.isResolved(request.id) ||
+          deps.interactionManager.isWaitingOrReleasing(request.id),
+      )
+    : 0;
 
   logger.info(
     `[Attach] Restored pending requests after event stream reconnect: session=${attached.sessionId}, question=${restoredQuestion}, permissions=${restoredPermissions}`,

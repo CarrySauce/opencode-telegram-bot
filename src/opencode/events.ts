@@ -281,6 +281,7 @@ export async function subscribeToEvents(
         consecutiveTimeouts = 0;
         eventStream = subscription.stream;
         let usefulEventCount = 0;
+        let connectedSeen = false;
 
         try {
           while (isListening && activeDirectory === directory && !controller.signal.aborted) {
@@ -322,6 +323,12 @@ export async function subscribeToEvents(
 
             if (normalizedEvent.event.type !== "server.connected") {
               usefulEventCount++;
+            } else if (connectedSeen) {
+              // The SDK's SSE client reconnected on its own: the loop never saw the drop.
+              logger.info(`Event stream reconnected by the client for ${directory}`);
+              streamDropped = true;
+            } else {
+              connectedSeen = true;
             }
 
             if (streamDropped) {

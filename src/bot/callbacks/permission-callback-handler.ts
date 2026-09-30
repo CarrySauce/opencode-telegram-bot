@@ -4,7 +4,11 @@ import type { PermissionReply } from "../../app/types/permission.js";
 import { opencodeClient, opencodeServerVersion } from "../../opencode/client.js";
 import { getCurrentProject } from "../../app/stores/settings-store.js";
 import { getCurrentSession } from "../../app/services/session-service.js";
-import { clearPermissionInteraction, syncPermissionInteractionState } from "../menus/permission-menu.js";
+import {
+  applyPermissionPromptChanges,
+  clearPermissionInteraction,
+  showPermissionDeliveryWarning,
+} from "../menus/permission-menu.js";
 import { t } from "../../i18n/index.js";
 import { logger } from "../../utils/logger.js";
 import { safeBackgroundTask } from "../../utils/safe-background-task.js";
@@ -138,8 +142,21 @@ async function handlePermissionReply(
     reject: t("permission.reply.reject"),
   };
 
-  await ctx.answerCallbackQuery({ text: replyLabels[reply] });
-  await ctx.deleteMessage().catch(() => {});
+  // On V2 a reject settles every pending request of the session.
+  const settlesSession = reply === "reject" && opencodeServerVersion === "v2";
+  if (
+    callbackMessageId === null ||
+    !deps.permissionManager.markSending(callbackMessageId, reply, settlesSession)
+  ) {
+    // The first answer is still on its way: a second tap changes nothing.
+    await ctx.answerCallbackQuery();
+    return;
+  }
+
+  // The answer is marked as being sent: a lost toast must not keep it from going out.
+  await ctx.answerCallbackQuery({ text: replyLabels[reply] }).catch((err) => {
+    logger.warn("[PermissionHandler] Failed to answer the permission callback:", err);
+  });
 
   deps.summaryAggregator.stopTypingIndicator();
 
@@ -147,11 +164,13 @@ async function handlePermissionReply(
     `[PermissionHandler] Sending permission reply: ${reply}, requestIDs=${requestIDs.join(",")}`,
   );
 
+  const messageId = callbackMessageId;
+  const sessionID = deps.permissionManager.getRequest(messageId)?.sessionID ?? null;
+
   safeBackgroundTask({
     taskName: "permission.reply",
     task: async () => {
-      let firstError: unknown = null;
-      let lastResponse: Awaited<ReturnType<typeof opencodeClient.permission.reply>> | null = null;
+      const results: PermissionReplyResults = { accepted: [], gone: [], failed: [] };
 
       for (const requestID of requestIDs) {
         const response = await opencodeClient.permission.reply({
@@ -159,59 +178,104 @@ async function handlePermissionReply(
           directory,
           reply,
         });
-        lastResponse = response;
 
         if (!response.error) {
-          continue;
-        }
-
-        if (requestIDs.length > 1 && isPermissionRequestNotFound(response.error)) {
+          results.accepted.push(requestID);
+        } else if (isPermissionRequestNotFound(response.error)) {
           logger.debug(
-            `[PermissionHandler] Ignoring duplicate permission reply miss: requestID=${requestID}`,
+            `[PermissionHandler] Permission request already resolved: requestID=${requestID}`,
           );
-          continue;
+          results.gone.push(requestID);
+        } else {
+          logger.error(
+            `[PermissionHandler] Failed to send permission reply: requestID=${requestID}`,
+            response.error,
+          );
+          results.failed.push(requestID);
         }
-
-        firstError ??= response.error;
       }
 
-      return { ...lastResponse, error: firstError };
+      return results;
     },
-    onSuccess: ({ error }) => {
-      if (error) {
-        if (isPermissionRequestNotFound(error)) {
-          logger.debug(
-            `[PermissionHandler] Permission request already resolved: requestIDs=${requestIDs.join(",")}`,
-          );
-          return;
-        }
-
-        logger.error("[PermissionHandler] Failed to send permission reply:", error);
-        if (ctx.api && chatId) {
-          void ctx.api.sendMessage(chatId, t("permission.send_reply_error")).catch(() => {});
-        }
-        return;
-      }
-
-      logger.info("[PermissionHandler] Permission reply sent successfully");
+    onSuccess: (results) => {
+      void finishPermissionReply(ctx.api, chatId, deps, {
+        messageId,
+        sessionID,
+        reply,
+        settlesSession,
+        results,
+      });
+    },
+    onError: () => {
+      void finishPermissionReply(ctx.api, chatId, deps, {
+        messageId,
+        sessionID,
+        reply,
+        settlesSession,
+        results: { accepted: [], gone: [], failed: requestIDs },
+      });
     },
   });
+}
 
-  const repliedRequest = deps.permissionManager.removeByMessageId(callbackMessageId);
+interface PermissionReplyResults {
+  accepted: string[];
+  gone: string[];
+  failed: string[];
+}
 
-  // On V2 a reject settles every pending request of the session, so their prompts go too.
-  if (reply === "reject" && opencodeServerVersion === "v2" && repliedRequest) {
-    for (const messageId of deps.permissionManager.resolveSessionRequests(repliedRequest.sessionID)) {
-      await ctx.api.deleteMessage(chatId, messageId).catch(() => {});
+interface FinishedPermissionReply {
+  messageId: number;
+  sessionID: string | null;
+  reply: PermissionReply;
+  settlesSession: boolean;
+  results: PermissionReplyResults;
+}
+
+/**
+ * Ends the prompt once OpenCode took the answer, or leaves it answerable with a warning
+ * when the answer did not get through. A prompt an event or a reset already ended stays
+ * as it is.
+ */
+async function finishPermissionReply(
+  api: Context["api"],
+  chatId: number,
+  deps: PermissionCallbackDeps,
+  finished: FinishedPermissionReply,
+): Promise<void> {
+  const { messageId, sessionID, reply, settlesSession, results } = finished;
+
+  try {
+    if (results.failed.length > 0) {
+      const change = deps.permissionManager.failSending(messageId, results.accepted);
+      if (change && change.outcome) {
+        await applyPermissionPromptChanges(api, chatId, [change], deps);
+      } else if (change) {
+        await showPermissionDeliveryWarning(api, chatId, change, deps);
+      }
+      return;
     }
-  }
 
-  if (!deps.permissionManager.isActive()) {
-    clearPermissionInteraction("permission_replied", deps);
-    return;
-  }
+    const answered = results.accepted.length > 0;
+    const change = deps.permissionManager.endPrompt(
+      messageId,
+      answered ? { kind: "replied", reply, outside: false } : { kind: "settled_outside" },
+    );
+    const changes = change ? [change] : [];
 
-  syncPermissionInteractionState(deps, {
-    lastRepliedRequestIDs: requestIDs,
-  });
+    if (answered && settlesSession && sessionID) {
+      changes.push(
+        ...deps.permissionManager.endSessionPrompts(sessionID, {
+          kind: "replied",
+          reply: "reject",
+          outside: false,
+        }),
+      );
+    }
+
+    await applyPermissionPromptChanges(api, chatId, changes, deps);
+    logger.info(`[PermissionHandler] Permission reply finished: messageId=${messageId}`);
+  } catch (err) {
+    logger.error("[PermissionHandler] Failed to finish permission reply:", err);
+  }
 }

@@ -31,7 +31,7 @@ beforeEach(() => {
 
 describe("questionManager", () => {
   it("starts poll and moves through questions", () => {
-    questionManager.startQuestions([SINGLE_QUESTION, MULTIPLE_QUESTION], "req-1");
+    questionManager.startQuestions([SINGLE_QUESTION, MULTIPLE_QUESTION], "req-1", "session-1");
 
     expect(questionManager.isActive()).toBe(true);
     expect(questionManager.getRequestID()).toBe("req-1");
@@ -47,12 +47,45 @@ describe("questionManager", () => {
     expect(questionManager.getCurrentQuestion()).toBeNull();
   });
 
+  it("replaces a poll only with one of the same session", () => {
+    questionManager.startQuestions([SINGLE_QUESTION], "req-a", "session-a");
+
+    expect(questionManager.startQuestions([MULTIPLE_QUESTION], "req-b", "session-b")).toBe(false);
+    expect(questionManager.getRequestID()).toBe("req-a");
+
+    expect(questionManager.startQuestions([MULTIPLE_QUESTION], "req-a2", "session-a")).toBe(true);
+    expect(questionManager.getRequestID()).toBe("req-a2");
+    expect(questionManager.getSessionId()).toBe("session-a");
+  });
+
+  it("marks a poll answered from Telegram until it is cleared", () => {
+    questionManager.startQuestions([SINGLE_QUESTION], "req-1", "session-1");
+    expect(questionManager.isAnsweredFromTelegram()).toBe(false);
+
+    questionManager.markAnsweredFromTelegram();
+    expect(questionManager.isAnsweredFromTelegram()).toBe(true);
+
+    questionManager.clear();
+    expect(questionManager.isAnsweredFromTelegram()).toBe(false);
+  });
+
+  it("keeps no custom-answer input once the poll is closed", () => {
+    questionManager.startQuestions([SINGLE_QUESTION], "req-1", "session-1");
+    questionManager.startCustomInput(0);
+    expect(questionManager.isWaitingForCustomInput(0)).toBe(true);
+
+    questionManager.clear();
+
+    expect(questionManager.isActive()).toBe(false);
+    expect(questionManager.isWaitingForCustomInput(0)).toBe(false);
+  });
+
   it("resets previous active poll when starting a new one", () => {
-    questionManager.startQuestions([SINGLE_QUESTION], "req-old");
+    questionManager.startQuestions([SINGLE_QUESTION], "req-old", "session-1");
     questionManager.selectOption(0, 1);
     questionManager.addMessageId(42);
 
-    questionManager.startQuestions([MULTIPLE_QUESTION], "req-new");
+    questionManager.startQuestions([MULTIPLE_QUESTION], "req-new", "session-1");
 
     expect(questionManager.getRequestID()).toBe("req-new");
     expect(questionManager.getTotalQuestions()).toBe(1);
@@ -61,7 +94,7 @@ describe("questionManager", () => {
   });
 
   it("handles single-choice and multiple-choice selections", () => {
-    questionManager.startQuestions([SINGLE_QUESTION, MULTIPLE_QUESTION], "req-2");
+    questionManager.startQuestions([SINGLE_QUESTION, MULTIPLE_QUESTION], "req-2", "session-1");
 
     questionManager.selectOption(0, 0);
     questionManager.selectOption(0, 1);
@@ -76,7 +109,7 @@ describe("questionManager", () => {
   });
 
   it("stores custom answers per question and adds them after the ticked options", () => {
-    questionManager.startQuestions([SINGLE_QUESTION, MULTIPLE_QUESTION], "req-3");
+    questionManager.startQuestions([SINGLE_QUESTION, MULTIPLE_QUESTION], "req-3", "session-1");
 
     questionManager.selectOption(0, 1);
     questionManager.selectOption(1, 0);
@@ -97,7 +130,7 @@ describe("questionManager", () => {
   });
 
   it("builds multi-select answer items from ticked options and the ticked custom text", () => {
-    questionManager.startQuestions([MULTIPLE_QUESTION], "req-3c");
+    questionManager.startQuestions([MULTIPLE_QUESTION], "req-3c", "session-1");
 
     questionManager.setCustomAnswer(0, "Line one\nline two");
     questionManager.selectOption(0, 2);
@@ -126,7 +159,7 @@ describe("questionManager", () => {
   });
 
   it("keeps single-select custom answers first and split by line breaks", () => {
-    questionManager.startQuestions([SINGLE_QUESTION], "req-3d");
+    questionManager.startQuestions([SINGLE_QUESTION], "req-3d", "session-1");
 
     questionManager.setCustomAnswer(0, "First line\nSecond line");
 
@@ -157,7 +190,11 @@ describe("questionManager", () => {
         { label: "Green", description: "Line one\nline two", value: "g" },
       ],
     };
-    questionManager.startQuestions([singleWithValues, multipleWithValues], "req-values");
+    questionManager.startQuestions(
+      [singleWithValues, multipleWithValues],
+      "req-values",
+      "session-1",
+    );
 
     questionManager.selectOption(0, 1);
     questionManager.selectOption(1, 1);
@@ -176,7 +213,11 @@ describe("questionManager", () => {
   });
 
   it("sends choices without a value as today's display lines", () => {
-    questionManager.startQuestions([SINGLE_QUESTION, MULTIPLE_QUESTION, SINGLE_QUESTION], "req-v1");
+    questionManager.startQuestions(
+      [SINGLE_QUESTION, MULTIPLE_QUESTION, SINGLE_QUESTION],
+      "req-v1",
+      "session-1",
+    );
 
     questionManager.selectOption(0, 0);
     questionManager.selectOption(1, 2);
@@ -190,7 +231,7 @@ describe("questionManager", () => {
   });
 
   it("does not toggle a custom answer that was never entered", () => {
-    questionManager.startQuestions([MULTIPLE_QUESTION], "req-3e");
+    questionManager.startQuestions([MULTIPLE_QUESTION], "req-3e", "session-1");
 
     questionManager.toggleCustomAnswer(0);
 
@@ -199,7 +240,7 @@ describe("questionManager", () => {
   });
 
   it("tracks custom input mode and active message id", () => {
-    questionManager.startQuestions([SINGLE_QUESTION, MULTIPLE_QUESTION], "req-3b");
+    questionManager.startQuestions([SINGLE_QUESTION, MULTIPLE_QUESTION], "req-3b", "session-1");
 
     expect(questionManager.getActiveMessageId()).toBeNull();
     expect(questionManager.isWaitingForCustomInput(0)).toBe(false);
@@ -217,7 +258,7 @@ describe("questionManager", () => {
   });
 
   it("returns copied message IDs and supports cancel/clear", () => {
-    questionManager.startQuestions([SINGLE_QUESTION], "req-4");
+    questionManager.startQuestions([SINGLE_QUESTION], "req-4", "session-1");
     questionManager.addMessageId(10);
     questionManager.addMessageId(11);
 

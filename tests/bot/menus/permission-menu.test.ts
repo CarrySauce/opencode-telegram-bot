@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Context } from "grammy";
 import type { PermissionRequest } from "../../../src/app/types/permission.js";
-import { showPermissionRequest } from "../../../src/bot/menus/permission-menu.js";
+import {
+  applyPermissionPromptChanges,
+  showPermissionRequest,
+} from "../../../src/bot/menus/permission-menu.js";
+import { t } from "../../../src/i18n/index.js";
 import { createTestAppContainer } from "../../helpers/app-container.js";
 import type { AppContainer } from "../../../src/app/bootstrap/app-container.js";
 
@@ -38,6 +42,99 @@ beforeEach(() => {
 });
 
 describe("bot/menus/permission-menu", () => {
+  function editApi(): { api: Context["api"]; editMessageText: ReturnType<typeof vi.fn> } {
+    const editMessageText = vi.fn().mockResolvedValue(true);
+    return { api: { editMessageText } as unknown as Context["api"], editMessageText };
+  }
+
+  it("ends a prompt with its outcome line and no buttons", async () => {
+    const { api, editMessageText } = editApi();
+
+    await applyPermissionPromptChanges(
+      api,
+      42,
+      [{ messageId: 201, request: PERMISSION, openCount: 0, outcome: { kind: "not_answered" } }],
+      deps,
+    );
+
+    const [, messageId, text, options] = editMessageText.mock.calls[0] ?? [];
+    expect(messageId).toBe(201);
+    expect(text).toBe(
+      `${t("permission.header", { emoji: "⚡", name: t("permission.name.bash") })}• npm test\n\n${t("permission.outcome.not_answered")}`,
+    );
+    expect(options).toBeUndefined();
+  });
+
+  it("shortens a single pattern that alone does not fit instead of hiding it", async () => {
+    const { api, editMessageText } = editApi();
+    const command = `echo ${"x".repeat(5000)}`;
+
+    await applyPermissionPromptChanges(
+      api,
+      42,
+      [
+        {
+          messageId: 201,
+          request: { ...PERMISSION, patterns: [command] },
+          openCount: 0,
+          outcome: { kind: "not_answered" },
+        },
+      ],
+      deps,
+    );
+
+    const text = String(editMessageText.mock.calls[0]?.[2]);
+    expect(text.length).toBeLessThanOrEqual(4096);
+    expect(text).toContain("• echo xxx");
+    expect(text).toContain("…\n");
+    expect(text.endsWith(`\n${t("permission.outcome.not_answered")}`)).toBe(true);
+  });
+
+  it("keeps the buttons and shows the lower count on a prompt left partly open", async () => {
+    const { api, editMessageText } = editApi();
+
+    await applyPermissionPromptChanges(
+      api,
+      42,
+      [{ messageId: 201, request: PERMISSION, openCount: 2, outcome: null }],
+      deps,
+    );
+
+    const [, , text, options] = editMessageText.mock.calls[0] ?? [];
+    expect(String(text)).toContain(t("permission.grouped_count", { count: 2 }));
+    expect(options).toHaveProperty("reply_markup");
+  });
+
+  it("cuts the pattern list so the prompt and its line fit one message", async () => {
+    const { api, editMessageText } = editApi();
+    const patterns = Array.from(
+      { length: 200 },
+      (_, index) => `D:/very/long/path/number/${index}/*`,
+    );
+
+    await applyPermissionPromptChanges(
+      api,
+      42,
+      [
+        {
+          messageId: 201,
+          request: { ...PERMISSION, patterns },
+          openCount: 0,
+          outcome: { kind: "replied", reply: "reject", outside: true },
+        },
+      ],
+      deps,
+    );
+
+    const text = String(editMessageText.mock.calls[0]?.[2]);
+    expect(text.length).toBeLessThanOrEqual(4096);
+    expect(text).toMatch(/• D:\/very[^\n]*…\n/);
+    expect(text).not.toContain("number/199/*");
+    expect(
+      text.endsWith(`\n${t("permission.outcome.reject")}${t("permission.outcome.outside_suffix")}`),
+    ).toBe(true);
+  });
+
   it("shows the prompt and opens the permission slot", async () => {
     const { api, deleteMessage } = createApi(() => {});
 
@@ -53,6 +150,7 @@ describe("bot/menus/permission-menu", () => {
       deps.questionManager.startQuestions(
         [{ header: "Q", question: "Pick", options: [] }],
         "req-1",
+        "session-1",
       );
     });
 
@@ -69,6 +167,7 @@ describe("bot/menus/permission-menu", () => {
       deps.questionManager.startQuestions(
         [{ header: "Q", question: "Pick", options: [] }],
         "req-1",
+        "session-1",
       );
       deps.interactionManager.reset("abort_command");
     });
@@ -85,8 +184,9 @@ describe("bot/menus/permission-menu", () => {
       deps.questionManager.startQuestions(
         [{ header: "Q", question: "Pick", options: [] }],
         "req-1",
+        "session-1",
       );
-      deps.permissionManager.resolveRequest("perm-1");
+      deps.permissionManager.settleRequest("perm-1", null);
     });
 
     await showPermissionRequest(api, 42, PERMISSION, deps);

@@ -49,7 +49,7 @@ describe("app/managers/interaction-error-scope", () => {
   });
 
   it("clears only questionManager for the question scope", () => {
-    questionManager.startQuestions([TEST_QUESTION], "req-1");
+    questionManager.startQuestions([TEST_QUESTION], "req-1", "session-1");
 
     interactionManager.clearErrorScope("question", "test_cleanup");
 
@@ -69,7 +69,7 @@ describe("app/managers/interaction-error-scope", () => {
   it("keeps waiting permissions for the question scope and releases them", async () => {
     const listener = vi.fn();
     interactionManager.setOnWaitingRequestReady(listener);
-    questionManager.startQuestions([TEST_QUESTION], "req-1");
+    questionManager.startQuestions([TEST_QUESTION], "req-1", "session-1");
     interactionManager.waitPermission(TEST_PERMISSION);
     const generation = interactionManager.getGeneration();
 
@@ -119,7 +119,7 @@ describe("app/managers/interaction-error-scope", () => {
   });
 
   it("keeps an unrelated interaction for the rename scope", () => {
-    questionManager.startQuestions([TEST_QUESTION], "req-1");
+    questionManager.startQuestions([TEST_QUESTION], "req-1", "session-1");
 
     interactionManager.clearErrorScope("rename", "test_cleanup");
 
@@ -145,7 +145,7 @@ describe("app/managers/interaction-error-scope", () => {
   });
 
   it("does nothing for the none scope", () => {
-    questionManager.startQuestions([TEST_QUESTION], "req-1");
+    questionManager.startQuestions([TEST_QUESTION], "req-1", "session-1");
 
     interactionManager.clearErrorScope("none", "test_cleanup");
 

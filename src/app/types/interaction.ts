@@ -59,7 +59,10 @@ export type StartInteractionOptions =
   | (StartInteractionOptionsBase & { kind: "task"; payload: TaskCreationState })
   | (StartInteractionOptionsBase & { kind: "inline" | "custom" });
 
-/** An agent request that arrived while a request of the other kind was on screen. */
+/**
+ * An agent request that arrived while another one held the slot: a poll of one session,
+ * or a group of permissions that arrived with no poll between them.
+ */
 export type WaitingAgentRequest =
   | { kind: "question"; questions: Question[]; requestID: string; sessionId: string }
   | { kind: "permission"; requests: PermissionRequest[] };
@@ -67,7 +70,10 @@ export type WaitingAgentRequest =
 export type WaitingAgentRequestListener = (
   request: WaitingAgentRequest,
   generation: number,
-) => void;
+) => void | Promise<void>;
+
+/** Permission prompts still on screen when the slot holding them was dropped. */
+export type DroppedPermissionPromptsListener = (state: PermissionState) => void;
 
 export interface TransitionInteractionOptions {
   expectedInput?: ExpectedInput | undefined;

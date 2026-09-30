@@ -8,6 +8,7 @@ import { safeBackgroundTask } from "../../utils/safe-background-task.js";
 import { t } from "../../i18n/index.js";
 import { editRenderedBotPart, sendRenderedBotPart } from "../messages/telegram-text.js";
 import type { TelegramRenderedPart, TelegramRichBlock } from "../render/types.js";
+import type { QuestionSettledOutcome } from "../../app/types/question.js";
 
 const MAX_BUTTON_LENGTH = 60;
 const TELEGRAM_MESSAGE_LIMIT = 4096;
@@ -201,6 +202,9 @@ async function showPollSummary(
     `[QuestionHandler] Poll completed: ${answers.length}/${totalQuestions} questions answered`,
   );
 
+  // OpenCode's reply event for these answers must not close the poll as answered elsewhere.
+  questionManager.markAnsweredFromTelegram();
+
   // Send all answers to the OpenCode API
   await sendAllAnswersToAgent(bot, chatId, deps);
 
@@ -214,6 +218,45 @@ async function showPollSummary(
   clearQuestionInteraction("question_completed", deps);
   questionManager.clear();
   logger.debug("[QuestionHandler] Poll completed and cleared");
+}
+
+/**
+ * Closes the poll on screen after OpenCode settled it outside Telegram: the question
+ * message keeps its text, loses its buttons and gets the outcome line, and the slot
+ * is released.
+ */
+export async function closeQuestionSettledOutside(
+  bot: Context["api"],
+  chatId: number,
+  outcome: QuestionSettledOutcome,
+  deps: QuestionStateDeps,
+): Promise<void> {
+  const { questionManager } = deps;
+  const question = questionManager.getCurrentQuestion();
+  const messageId = questionManager.getActiveMessageId();
+  const line = t(
+    outcome === "answered"
+      ? "question.settled_outside.answered"
+      : "question.settled_outside.cancelled",
+  );
+
+  logger.info(
+    `[QuestionHandler] Poll settled outside Telegram: requestID=${questionManager.getRequestID()}, outcome=${outcome}`,
+  );
+
+  if (question && messageId !== null) {
+    await editRenderedBotPart({
+      api: bot,
+      chatId,
+      messageId,
+      part: formatQuestionDetailsPart(question, deps, line),
+    }).catch((err) => {
+      logger.warn("[QuestionHandler] Failed to close the settled poll message:", err);
+    });
+  }
+
+  clearQuestionInteraction("question_settled_outside", deps);
+  questionManager.clear();
 }
 
 async function sendAllAnswersToAgent(
@@ -370,7 +413,7 @@ function formatQuestionDetailsPart(question: {
   question: string;
   options: Array<{ label: string; description: string }>;
   multiple?: boolean;
-}, deps: QuestionDataDeps): TelegramRenderedPart {
+}, deps: QuestionDataDeps, statusLine?: string): TelegramRenderedPart {
   const currentIndex = deps.questionManager.getCurrentIndex();
   const totalQuestions = deps.questionManager.getTotalQuestions();
   const progressText = totalQuestions > 0 ? `${currentIndex + 1}/${totalQuestions}` : "";
@@ -393,10 +436,16 @@ function formatQuestionDetailsPart(question: {
     });
   }
 
+  // A status line closes the card and is never cut: the question text makes room for it.
+  const statusSegment: QuestionSegment | null = statusLine ? { rest: statusLine } : null;
+  const reserved = statusSegment ? segmentLength(statusSegment) + 2 : 0;
   const visibleSegments = truncateQuestionSegments(
     segments.filter((segment) => segmentLength(segment) > 0),
-    TELEGRAM_MESSAGE_LIMIT,
+    TELEGRAM_MESSAGE_LIMIT - reserved,
   );
+  if (statusSegment) {
+    visibleSegments.push(statusSegment);
+  }
 
   return {
     blocks: visibleSegments.map(segmentToBlock),

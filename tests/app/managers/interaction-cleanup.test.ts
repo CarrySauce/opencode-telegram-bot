@@ -48,7 +48,7 @@ describe("app/managers/interaction-cleanup", () => {
   it("clears the slot and the waiting request together", async () => {
     const listener = vi.fn();
     interactionManager.setOnWaitingRequestReady(listener);
-    questionManager.startQuestions([TEST_QUESTION], "req-1");
+    questionManager.startQuestions([TEST_QUESTION], "req-1", "session-1");
     interactionManager.waitPermission(TEST_PERMISSION);
     const generation = interactionManager.getGeneration();
 
@@ -82,7 +82,7 @@ describe("app/managers/interaction-cleanup", () => {
 
     interactionManager.reset("first_cleanup");
 
-    questionManager.startQuestions([TEST_QUESTION], "req-2");
+    questionManager.startQuestions([TEST_QUESTION], "req-2", "session-1");
 
     expect(interactionManager.getSnapshot()?.kind).toBe("question");
   });

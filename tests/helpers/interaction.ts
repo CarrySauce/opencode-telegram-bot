@@ -32,6 +32,8 @@ export function startInteractionForTest(
           activeMessageId: null,
           messageIds: [],
           requestID: null,
+          sessionId: "session-test",
+          answeredFromTelegram: false,
         },
       });
     case "permission":
@@ -42,6 +44,7 @@ export function startInteractionForTest(
           requestsByMessageId: new Map(),
           requestIdsByMessageId: new Map(),
           messageIdBySignature: new Map(),
+          sendsByMessageId: new Map(),
         },
       });
     case "rename":

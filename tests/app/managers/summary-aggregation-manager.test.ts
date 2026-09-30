@@ -2679,6 +2679,140 @@ describe("summary/aggregator", () => {
     });
   });
 
+  describe("requests of subagent sessions", () => {
+    function trackChildSession(): void {
+      summaryAggregator.setSession("root-session");
+      summaryAggregator.processEvent({
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "subtask-1",
+            sessionID: "root-session",
+            messageID: "root-message",
+            type: "subtask",
+            prompt: "Ask the user",
+            description: "Ask the user",
+            agent: "general",
+          },
+        },
+      } as unknown as Event);
+      summaryAggregator.processEvent({
+        type: "session.created",
+        properties: {
+          info: {
+            id: "child-session-1",
+            parentID: "root-session",
+            title: "Ask the user (@general subagent)",
+            slug: "child",
+            directory: "D:/repo",
+            projectID: "p1",
+            version: "1",
+            time: { created: Date.now(), updated: Date.now() },
+          },
+        },
+      } as unknown as Event);
+    }
+
+    function emitQuestion(id: string, sessionID: string): void {
+      summaryAggregator.processEvent({
+        type: "question.asked",
+        properties: {
+          id,
+          sessionID,
+          questions: [{ header: "Pick", question: "Which?", options: [] }],
+        },
+      } as unknown as Event);
+    }
+
+    it("forwards question.asked from a tracked subagent session and ignores unrelated ones", async () => {
+      const onQuestion = vi.fn();
+      summaryAggregator.setOnQuestion(onQuestion);
+      trackChildSession();
+
+      emitQuestion("q-child", "child-session-1");
+      emitQuestion("q-other", "some-other-session");
+
+      await vi.waitFor(() => {
+        expect(onQuestion).toHaveBeenCalledTimes(1);
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(onQuestion).toHaveBeenCalledTimes(1);
+      expect(onQuestion.mock.calls[0]?.[1]).toBe("q-child");
+      expect(onQuestion.mock.calls[0]?.[2]).toBe("child-session-1");
+    });
+
+    it("reports questions settled outside Telegram for the followed session and its subagents", async () => {
+      const onQuestionSettled = vi.fn();
+      summaryAggregator.setOnQuestionSettled(onQuestionSettled);
+      trackChildSession();
+
+      summaryAggregator.processEvent({
+        type: "question.replied",
+        properties: { sessionID: "root-session", requestID: "q-root", answers: [] },
+      } as unknown as Event);
+      summaryAggregator.processEvent({
+        type: "question.rejected",
+        properties: { sessionID: "child-session-1", requestID: "q-child" },
+      } as unknown as Event);
+      summaryAggregator.processEvent({
+        type: "question.replied",
+        properties: { sessionID: "some-other-session", requestID: "q-other", answers: [] },
+      } as unknown as Event);
+
+      await vi.waitFor(() => {
+        expect(onQuestionSettled).toHaveBeenCalledTimes(2);
+      });
+      expect(onQuestionSettled).toHaveBeenCalledWith("root-session", "q-root", "answered");
+      expect(onQuestionSettled).toHaveBeenCalledWith("child-session-1", "q-child", "cancelled");
+    });
+
+    it("passes OpenCode's decision along with a replied permission", async () => {
+      const onPermissionReplied = vi.fn();
+      summaryAggregator.setOnPermissionReplied(onPermissionReplied);
+      trackChildSession();
+
+      summaryAggregator.processEvent({
+        type: "permission.replied",
+        properties: { sessionID: "child-session-1", requestID: "perm-1", reply: "reject" },
+      } as unknown as Event);
+      summaryAggregator.processEvent({
+        type: "permission.replied",
+        properties: { sessionID: "root-session", requestID: "perm-2" },
+      } as unknown as Event);
+
+      await vi.waitFor(() => {
+        expect(onPermissionReplied).toHaveBeenCalledTimes(2);
+      });
+      expect(onPermissionReplied).toHaveBeenCalledWith("child-session-1", "perm-1", "reject");
+      expect(onPermissionReplied).toHaveBeenCalledWith("root-session", "perm-2", null);
+    });
+
+    it("reports the end of a run for the followed session and its subagents", async () => {
+      const onSessionRunEnded = vi.fn();
+      summaryAggregator.setOnSessionRunEnded(onSessionRunEnded);
+      trackChildSession();
+
+      summaryAggregator.processEvent({
+        type: "session.error",
+        properties: { sessionID: "child-session-1", error: { name: "UnknownError", data: {} } },
+      } as unknown as Event);
+      summaryAggregator.processEvent({
+        type: "session.idle",
+        properties: { sessionID: "root-session" },
+      } as unknown as Event);
+      summaryAggregator.processEvent({
+        type: "session.idle",
+        properties: { sessionID: "some-other-session" },
+      } as unknown as Event);
+
+      await vi.waitFor(() => {
+        expect(onSessionRunEnded).toHaveBeenCalledTimes(2);
+      });
+      expect(onSessionRunEnded).toHaveBeenCalledWith("child-session-1");
+      expect(onSessionRunEnded).toHaveBeenCalledWith("root-session");
+    });
+  });
+
   it("ignores permission.asked events from unrelated sessions", async () => {
     const onPermission = vi.fn();
     summaryAggregator.setOnPermission(onPermission);

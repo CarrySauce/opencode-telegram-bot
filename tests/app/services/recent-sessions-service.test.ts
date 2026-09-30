@@ -57,6 +57,14 @@ describe("cross-project recent session snapshot", () => {
     expect(mocked.get).toHaveBeenCalledTimes(2);
   });
 
+  it("attributes a subagent's pending question through its parent chain to a listed root", async () => {
+    mocked.list.mockResolvedValue({ data: [session("root", "/other", 3)], error: null });
+    mocked.questions.mockResolvedValue({ data: [{ sessionID: "child" }], error: null });
+    mocked.get.mockResolvedValue({ data: { parentID: "root" }, error: null });
+
+    expect((await loadRecentSessions(10))[0]?.status).toBe("question");
+  });
+
   it("retains an older attached root inside the limit", async () => {
     mocked.attached = { id: "old", directory: "/old" };
     mocked.list.mockResolvedValue({ data: [session("new", "/new", 10), session("next", "/new", 9)], error: null });

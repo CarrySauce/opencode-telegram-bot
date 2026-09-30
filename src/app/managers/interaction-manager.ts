@@ -1,5 +1,6 @@
 import type {
   ActiveInteraction,
+  DroppedPermissionPromptsListener,
   InteractionClearReason,
   InteractionPayloads,
   InteractionState,
@@ -88,9 +89,13 @@ const SCOPE_TO_INTERACTION_KIND: Record<
 
 export class InteractionManager {
   private state: ActiveInteraction | null = null;
-  private waiting: WaitingAgentRequest | null = null;
+  // Agent requests waiting for the slot, in the order they arrived.
+  private waiting: WaitingAgentRequest[] = [];
   private generation = 0;
   private onWaitingRequestReady: WaitingAgentRequestListener | null = null;
+  private onPermissionPromptsDropped: DroppedPermissionPromptsListener | null = null;
+  // Request IDs taken out of the queue whose presentation has not finished yet.
+  private releasingRequestIds = new Set<string>();
 
   /**
    * Opens the slot, replacing whatever it held. Replacing never releases the
@@ -192,31 +197,28 @@ export class InteractionManager {
   }
 
   /**
-   * Empties the slot. When a question or permission ends and a request of the
-   * other kind is waiting, that request is handed to the listener.
+   * Empties the slot. When a question or permission ends and an agent request is
+   * waiting, the one that arrived first is handed to the listener.
    */
   clear(reason: InteractionClearReason = "manual"): void {
     const clearedKind = this.drop(reason);
-    if (!clearedKind || !isAgentRequestKind(clearedKind) || !this.waiting) {
+    if (!clearedKind || !isAgentRequestKind(clearedKind)) {
       return;
     }
 
-    const request = this.waiting;
-    const generation = this.generation;
-    const listener = this.onWaitingRequestReady;
-    this.waiting = null;
+    this.releaseHead(clearedKind);
+  }
 
-    if (!listener) {
-      logger.warn(
-        `[InteractionManager] No listener for the waiting request, dropping it: kind=${request.kind}`,
-      );
+  /**
+   * Hands the first waiting request to the listener while the slot is empty, so a
+   * released request that was not shown does not leave the rest waiting.
+   */
+  releaseNext(): void {
+    if (this.state) {
       return;
     }
 
-    logger.info(
-      `[InteractionManager] Releasing waiting request: kind=${request.kind}, after=${clearedKind}`,
-    );
-    setImmediate(() => listener(request, generation));
+    this.releaseHead("empty_slot");
   }
 
   /**
@@ -234,17 +236,17 @@ export class InteractionManager {
    */
   reset(reason: InteractionClearReason): void {
     const interactionSnapshot = this.getSnapshot();
-    const waitingKind = this.getWaitingKind();
+    const waitingCount = this.waiting.length;
 
-    this.waiting = null;
+    this.waiting = [];
     this.bumpGeneration();
     this.drop(reason);
 
     const message =
       `[InteractionCleanup] Cleared state: reason=${reason}, ` +
-      `interactionKind=${interactionSnapshot?.kind || "none"}, waiting=${waitingKind || "none"}`;
+      `interactionKind=${interactionSnapshot?.kind || "none"}, waiting=${waitingCount}`;
 
-    if (interactionSnapshot !== null || waitingKind !== null) {
+    if (interactionSnapshot !== null || waitingCount > 0) {
       logger.info(message);
       return;
     }
@@ -286,73 +288,191 @@ export class InteractionManager {
     this.generation++;
   }
 
-  waitQuestion(questions: Question[], requestID: string, sessionId: string): void {
-    if (this.waiting?.kind === "question") {
-      logger.info(
-        `[InteractionManager] Replacing waiting poll: requestID=${this.waiting.requestID}`,
-      );
+  /**
+   * Queues a poll. A poll of a session that already waits replaces that one in its
+   * place; `atHead` puts a released poll that has to wait again back in front.
+   */
+  waitQuestion(
+    questions: Question[],
+    requestID: string,
+    sessionId: string,
+    options: { atHead?: boolean } = {},
+  ): void {
+    const entry: WaitingAgentRequest = { kind: "question", questions, requestID, sessionId };
+    const index = this.waiting.findIndex(
+      (waiting) => waiting.kind === "question" && waiting.sessionId === sessionId,
+    );
+
+    if (index >= 0) {
+      logger.info(`[InteractionManager] Replacing waiting poll of session: session=${sessionId}`);
+      this.waiting[index] = entry;
+    } else if (options.atHead) {
+      this.waiting.unshift(entry);
+    } else {
+      this.waiting.push(entry);
     }
 
-    this.waiting = { kind: "question", questions, requestID, sessionId };
-    logger.info(`[InteractionManager] Poll is waiting: requestID=${requestID}`);
+    logger.info(
+      `[InteractionManager] Poll is waiting: requestID=${requestID}, waiting=${this.waiting.length}`,
+    );
   }
 
-  waitPermission(request: PermissionRequest): void {
-    const requests = this.waiting?.kind === "permission" ? this.waiting.requests : [];
-    if (!requests.some((waiting) => waiting.id === request.id)) {
-      requests.push(request);
+  /**
+   * Queues a permission. It joins the permission group at the end of the queue (or at
+   * its head with `atHead`), or starts a new group when a poll waits in that place.
+   */
+  waitPermission(request: PermissionRequest, options: { atHead?: boolean } = {}): void {
+    if (this.isWaitingPermission(request.id)) {
+      return;
     }
 
-    this.waiting = { kind: "permission", requests };
+    const index = options.atHead ? 0 : this.waiting.length - 1;
+    const neighbour = this.waiting[index];
+    if (neighbour?.kind === "permission") {
+      neighbour.requests.push(request);
+    } else if (options.atHead) {
+      this.waiting.unshift({ kind: "permission", requests: [request] });
+    } else {
+      this.waiting.push({ kind: "permission", requests: [request] });
+    }
+
     logger.info(
-      `[InteractionManager] Permission is waiting: requestID=${request.id}, waiting=${requests.length}`,
+      `[InteractionManager] Permission is waiting: requestID=${request.id}, waiting=${this.waiting.length}`,
     );
   }
 
   dropWaitingPermission(requestID: string): void {
-    if (this.waiting?.kind !== "permission") {
-      return;
+    if (this.dropWaitingPermissions((request) => request.id === requestID)) {
+      logger.info(`[InteractionManager] Dropped waiting permission: requestID=${requestID}`);
     }
-
-    const requests = this.waiting.requests.filter((request) => request.id !== requestID);
-    if (requests.length === this.waiting.requests.length) {
-      return;
-    }
-
-    this.waiting = requests.length > 0 ? { kind: "permission", requests } : null;
-    logger.info(`[InteractionManager] Dropped waiting permission: requestID=${requestID}`);
   }
 
   dropWaitingPermissionsForSession(sessionID: string): void {
-    if (this.waiting?.kind !== "permission") {
-      return;
+    if (this.dropWaitingPermissions((request) => request.sessionID === sessionID)) {
+      logger.info(
+        `[InteractionManager] Dropped waiting permissions of session: session=${sessionID}`,
+      );
     }
-
-    const requests = this.waiting.requests.filter((request) => request.sessionID !== sessionID);
-    if (requests.length === this.waiting.requests.length) {
-      return;
-    }
-
-    this.waiting = requests.length > 0 ? { kind: "permission", requests } : null;
-    logger.info(`[InteractionManager] Dropped waiting permissions of session: session=${sessionID}`);
   }
 
-  dropWaitingQuestion(): boolean {
-    if (this.waiting?.kind !== "question") {
-      return false;
-    }
-
-    logger.info(`[InteractionManager] Dropped waiting poll: requestID=${this.waiting.requestID}`);
-    this.waiting = null;
-    return true;
+  dropWaitingQuestion(requestID: string): boolean {
+    return this.dropWaitingQuestions((waiting) => waiting.requestID === requestID);
   }
 
+  dropWaitingQuestionsForSession(sessionId: string): boolean {
+    return this.dropWaitingQuestions((waiting) => waiting.sessionId === sessionId);
+  }
+
+  /** Kind of the request that is released next, or null when nothing waits. */
   getWaitingKind(): WaitingAgentRequest["kind"] | null {
-    return this.waiting?.kind ?? null;
+    return this.waiting[0]?.kind ?? null;
+  }
+
+  isWaitingQuestion(requestID: string): boolean {
+    return this.getWaitingQuestionRequestIds().includes(requestID);
+  }
+
+  isWaitingPermission(requestID: string): boolean {
+    return this.getWaitingPermissionRequestIds().includes(requestID);
+  }
+
+  /** Whether a request waits in the queue or was released and is still being presented. */
+  isWaitingOrReleasing(requestID: string): boolean {
+    return (
+      this.releasingRequestIds.has(requestID) ||
+      this.isWaitingQuestion(requestID) ||
+      this.isWaitingPermission(requestID)
+    );
+  }
+
+  getWaitingQuestionRequestIds(): string[] {
+    return this.waiting.flatMap((waiting) =>
+      waiting.kind === "question" ? [waiting.requestID] : [],
+    );
+  }
+
+  getWaitingPermissionRequestIds(): string[] {
+    return this.waiting.flatMap((waiting) =>
+      waiting.kind === "permission" ? waiting.requests.map((request) => request.id) : [],
+    );
   }
 
   setOnWaitingRequestReady(listener: WaitingAgentRequestListener | null): void {
     this.onWaitingRequestReady = listener;
+  }
+
+  setOnPermissionPromptsDropped(listener: DroppedPermissionPromptsListener | null): void {
+    this.onPermissionPromptsDropped = listener;
+  }
+
+  private releaseHead(after: string): void {
+    const request = this.waiting.shift();
+    if (!request) {
+      return;
+    }
+
+    const generation = this.generation;
+    const listener = this.onWaitingRequestReady;
+    if (!listener) {
+      logger.warn(
+        `[InteractionManager] No listener for the waiting request, dropping it: kind=${request.kind}`,
+      );
+      return;
+    }
+
+    logger.info(
+      `[InteractionManager] Releasing waiting request: kind=${request.kind}, after=${after}, waiting=${this.waiting.length}`,
+    );
+
+    const requestIds =
+      request.kind === "question" ? [request.requestID] : request.requests.map(({ id }) => id);
+    for (const requestID of requestIds) {
+      this.releasingRequestIds.add(requestID);
+    }
+
+    setImmediate(() => {
+      void Promise.resolve()
+        .then(() => listener(request, generation))
+        .catch((err) => {
+          logger.error(`[InteractionManager] Failed to present the waiting ${request.kind}:`, err);
+        })
+        .finally(() => {
+          for (const requestID of requestIds) {
+            this.releasingRequestIds.delete(requestID);
+          }
+          // A released request that was not shown must not hold back the rest of the queue.
+          this.releaseNext();
+        });
+    });
+  }
+
+  private dropWaitingPermissions(matches: (request: PermissionRequest) => boolean): boolean {
+    let dropped = false;
+    this.waiting = this.waiting.flatMap((waiting): WaitingAgentRequest[] => {
+      if (waiting.kind !== "permission") {
+        return [waiting];
+      }
+
+      const requests = waiting.requests.filter((request) => !matches(request));
+      dropped ||= requests.length !== waiting.requests.length;
+      return requests.length > 0 ? [{ kind: "permission", requests }] : [];
+    });
+    return dropped;
+  }
+
+  private dropWaitingQuestions(
+    matches: (waiting: Extract<WaitingAgentRequest, { kind: "question" }>) => boolean,
+  ): boolean {
+    const before = this.waiting.length;
+    this.waiting = this.waiting.filter((waiting) => {
+      if (waiting.kind !== "question" || !matches(waiting)) {
+        return true;
+      }
+
+      logger.info(`[InteractionManager] Dropped waiting poll: requestID=${waiting.requestID}`);
+      return false;
+    });
+    return this.waiting.length !== before;
   }
 
   private drop(reason: InteractionClearReason): InteractionState["kind"] | null {
@@ -360,12 +480,22 @@ export class InteractionManager {
       return null;
     }
 
-    const kind = this.state.kind;
+    const dropped = this.state;
     logger.info(
-      `[InteractionManager] Cleared interaction: reason=${reason}, kind=${kind}, expectedInput=${this.state.expectedInput}`,
+      `[InteractionManager] Cleared interaction: reason=${reason}, kind=${dropped.kind}, expectedInput=${dropped.expectedInput}`,
     );
 
     this.state = null;
-    return kind;
+
+    // Prompts still on screen get their "not answered" ending instead of dead buttons.
+    if (dropped.kind === "permission" && dropped.payload.requestsByMessageId.size > 0) {
+      try {
+        this.onPermissionPromptsDropped?.(dropped.payload);
+      } catch (err) {
+        logger.error("[InteractionManager] Error in dropped permission prompts listener:", err);
+      }
+    }
+
+    return dropped.kind;
   }
 }

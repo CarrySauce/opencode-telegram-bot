@@ -2,8 +2,9 @@ import { getDeleteCompactProgressOnFinish } from "../../../app/stores/settings-s
 import { logger } from "../../../utils/logger.js";
 import type { PermissionRequest } from "../../../app/types/permission.js";
 import type { Question } from "../../../app/types/question.js";
-import { showCurrentQuestion } from "../../menus/question-menu.js";
+import { closeQuestionSettledOutside, showCurrentQuestion } from "../../menus/question-menu.js";
 import {
+  applyPermissionPromptChanges,
   showPermissionRequest,
   syncPermissionInteractionState,
 } from "../../menus/permission-menu.js";
@@ -18,9 +19,18 @@ type InteractionDeps = EventHandlerDeps<
   | "summaryAggregator"
 >;
 
+/** The session the chat follows for a request: a subagent's requests belong to its root. */
+function getFollowedSessionId(deps: InteractionDeps, sessionId: string): string {
+  const { summaryAggregator } = deps;
+  return summaryAggregator.isSubagentSession(sessionId)
+    ? summaryAggregator.getRootSessionId(sessionId)
+    : sessionId;
+}
+
 /**
- * Shows a poll, or leaves it waiting while permission prompts are on screen.
- * `generation` is set for a poll released from the waiting place.
+ * Shows a poll, or leaves it waiting while permission prompts or another session's poll
+ * are on screen. A subagent's poll is shown while its parent session is followed.
+ * `generation` is set for a poll released from the waiting queue.
  */
 async function presentQuestion(
   deps: InteractionDeps,
@@ -36,7 +46,8 @@ async function presentQuestion(
     return;
   }
 
-  if (!policy.isForegroundSession(sessionId)) {
+  const followedSessionId = getFollowedSessionId(deps, sessionId);
+  if (!policy.isForegroundSession(followedSessionId)) {
     return;
   }
 
@@ -44,8 +55,8 @@ async function presentQuestion(
     runtime.toolMessageBatcher.flushSession(sessionId, "question_asked"),
     runtime.toolCallStreamer.flushSession(sessionId, "question_asked"),
   ]);
-  await keepAssistantDraftsBeforePrompt(deps, sessionId);
-  await runtime.letOutReplies(sessionId);
+  await keepAssistantDraftsBeforePrompt(deps, followedSessionId);
+  await runtime.letOutReplies(followedSessionId);
 
   // Decide and open the slot in one synchronous step: a permission or a
   // reset may have landed during the flushes.
@@ -54,19 +65,23 @@ async function presentQuestion(
     return;
   }
 
-  if (!policy.isForegroundSession(sessionId)) {
+  if (!policy.isForegroundSession(followedSessionId)) {
     return;
   }
 
-  const previousMessageIds = questionManager.isActive() ? questionManager.getMessageIds() : [];
-  if (!questionManager.startQuestions(questions, requestID)) {
-    interactionManager.waitQuestion(questions, requestID, sessionId);
+  const replacing = questionManager.isActive() && questionManager.getSessionId() === sessionId;
+  const previousMessageIds = replacing ? questionManager.getMessageIds() : [];
+  if (!questionManager.startQuestions(questions, requestID, sessionId)) {
+    // A released poll that has to wait again keeps its turn at the head of the queue.
+    interactionManager.waitQuestion(questions, requestID, sessionId, {
+      atHead: generation !== null,
+    });
     return;
   }
 
   if (isCompactProgressMode()) {
-    await runtime.compactProgressStreamer.flushPending(sessionId);
-    runtime.compactProgressStreamer.holdForClose(sessionId);
+    await runtime.compactProgressStreamer.flushPending(followedSessionId);
+    runtime.compactProgressStreamer.holdForClose(followedSessionId);
   }
 
   if (previousMessageIds.length > 0) {
@@ -76,18 +91,23 @@ async function presentQuestion(
     }
   }
 
-  logger.info(`[Bot] Received ${questions.length} questions from agent, requestID=${requestID}`);
+  logger.info(
+    `[Bot] Received ${questions.length} questions from agent, requestID=${requestID}, subagent=${followedSessionId !== sessionId}`,
+  );
   try {
     await showCurrentQuestion(destination.api, destination.chatId, deps);
   } catch {
-    runtime.compactProgressStreamer.releaseHold(sessionId);
+    runtime.compactProgressStreamer.releaseHold(followedSessionId);
     return;
   }
 
   if (isCompactProgressMode()) {
-    await runtime.compactProgressStreamer.finalize(sessionId, getDeleteCompactProgressOnFinish());
+    await runtime.compactProgressStreamer.finalize(
+      followedSessionId,
+      getDeleteCompactProgressOnFinish(),
+    );
   } else {
-    runtime.compactProgressStreamer.releaseHold(sessionId);
+    runtime.compactProgressStreamer.releaseHold(followedSessionId);
   }
 }
 
@@ -99,8 +119,9 @@ async function presentPermission(
   deps: InteractionDeps,
   request: PermissionRequest,
   generation: number,
+  released = false,
 ): Promise<void> {
-  const { runtime, policy, interactionManager, permissionManager, summaryAggregator } = deps;
+  const { runtime, policy, interactionManager, permissionManager } = deps;
   const sessionId = request.sessionID;
   const destination = policy.getDestination(sessionId);
   if (!destination) {
@@ -108,8 +129,8 @@ async function presentPermission(
     return;
   }
 
-  const isSubagent = summaryAggregator.isSubagentSession(sessionId);
-  const followedSessionId = isSubagent ? summaryAggregator.getRootSessionId(sessionId) : sessionId;
+  const followedSessionId = getFollowedSessionId(deps, sessionId);
+  const isSubagent = followedSessionId !== sessionId;
   if (!policy.isForegroundSession(followedSessionId)) {
     return;
   }
@@ -128,7 +149,7 @@ async function presentPermission(
   }
 
   if (interactionManager.getSnapshot()?.kind === "question") {
-    interactionManager.waitPermission(request);
+    interactionManager.waitPermission(request, { atHead: released });
     return;
   }
 
@@ -171,8 +192,8 @@ export function registerInteractionHandlers(deps: InteractionDeps): void {
   });
 
   summaryAggregator.setOnQuestionError(async (sessionId) => {
-    if (!questionManager.isActive()) {
-      interactionManager.dropWaitingQuestion();
+    if (!questionManager.isActive() || questionManager.getSessionId() !== sessionId) {
+      interactionManager.dropWaitingQuestionsForSession(sessionId);
       return;
     }
 
@@ -191,55 +212,97 @@ export function registerInteractionHandlers(deps: InteractionDeps): void {
     }
   });
 
+  summaryAggregator.setOnQuestionSettled(async (sessionId, requestID, outcome) => {
+    if (!questionManager.isActive() || questionManager.getRequestID() !== requestID) {
+      interactionManager.dropWaitingQuestion(requestID);
+      return;
+    }
+
+    // The poll is being answered from Telegram: this event is OpenCode confirming it.
+    if (questionManager.isAnsweredFromTelegram()) {
+      return;
+    }
+
+    const destination = policy.getDestination(sessionId);
+    if (!destination) {
+      questionManager.clear();
+      return;
+    }
+
+    await closeQuestionSettledOutside(destination.api, destination.chatId, outcome, deps);
+  });
+
   summaryAggregator.setOnPermission(async (request) => {
     await presentPermission(deps, request, permissionManager.getGeneration());
   });
 
-  interactionManager.setOnWaitingRequestReady((request, generation) => {
-    const present = async (): Promise<void> => {
-      if (request.kind === "question") {
-        await presentQuestion(
-          deps,
-          request.questions,
-          request.requestID,
-          request.sessionId,
-          generation,
-        );
-        return;
-      }
+  interactionManager.setOnWaitingRequestReady(async (request, generation) => {
+    if (request.kind === "question") {
+      await presentQuestion(
+        deps,
+        request.questions,
+        request.requestID,
+        request.sessionId,
+        generation,
+      );
+      return;
+    }
 
-      for (const permission of request.requests) {
-        await presentPermission(deps, permission, generation);
-      }
-    };
-
-    present().catch((err) => {
-      logger.error(`[Bot] Failed to show waiting ${request.kind} request:`, err);
-    });
+    for (const permission of request.requests) {
+      await presentPermission(deps, permission, generation, true);
+    }
   });
 
-  summaryAggregator.setOnPermissionReplied(async (sessionId, requestID) => {
-    const messageIds = permissionManager.resolveRequest(requestID);
-    const interaction = interactionManager.getSnapshot();
-    if (!permissionManager.isActive() || !interaction || interaction.kind === "permission") {
-      syncPermissionInteractionState(deps, { resolvedRequestID: requestID });
+  interactionManager.setOnPermissionPromptsDropped((state) => {
+    const changes = [...state.requestsByMessageId].map(([messageId, request]) => ({
+      messageId,
+      request,
+      openCount: 0,
+      outcome: { kind: "not_answered" as const },
+    }));
+    const destination = policy.getDestination(changes[0]?.request.sessionID ?? "");
+    if (!destination) {
+      return;
+    }
+
+    logger.info(`[Bot] Ending dropped permission prompts as not answered: count=${changes.length}`);
+    void applyPermissionPromptChanges(destination.api, destination.chatId, changes, deps);
+  });
+
+  summaryAggregator.setOnPermissionReplied(async (sessionId, requestID, reply) => {
+    const changes = permissionManager.settleRequest(requestID, reply);
+    if (changes.length === 0) {
+      return;
     }
 
     const destination = policy.getDestination(sessionId);
-    if (destination) {
-      await Promise.all(
-        messageIds.map((messageId) =>
-          destination.api.deleteMessage(destination.chatId, messageId).catch((err) => {
-            logger.warn(`[Bot] Failed to delete resolved permission message ${messageId}:`, err);
-          }),
-        ),
-      );
+    if (!destination) {
+      syncPermissionInteractionState(deps);
+      return;
     }
 
-    if (messageIds.length > 0) {
-      logger.info(
-        `[Bot] Cleared resolved permission prompt: requestID=${requestID}, messages=${messageIds.length}`,
-      );
+    await applyPermissionPromptChanges(destination.api, destination.chatId, changes, deps);
+    logger.info(
+      `[Bot] Settled permission prompt: requestID=${requestID}, prompts=${changes.length}`,
+    );
+  });
+
+  summaryAggregator.setOnSessionRunEnded(async (sessionId) => {
+    interactionManager.dropWaitingQuestionsForSession(sessionId);
+    const changes = permissionManager.endSessionPrompts(sessionId, { kind: "not_answered" });
+    if (changes.length === 0) {
+      return;
     }
+
+    const destination = policy.getDestination(sessionId);
+    if (!destination) {
+      syncPermissionInteractionState(deps);
+      return;
+    }
+
+    logger.info(
+      `[Bot] Session run ended with permission prompts open: session=${sessionId}, prompts=${changes.length}`,
+    );
+    await applyPermissionPromptChanges(destination.api, destination.chatId, changes, deps);
   });
 }

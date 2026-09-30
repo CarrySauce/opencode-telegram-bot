@@ -7,6 +7,7 @@ import type { Event } from "@opencode-ai/sdk/v2";
 import { setRuntimeMode } from "../../../src/runtime/mode.js";
 import { resetSingletonState } from "../../helpers/reset-singleton-state.js";
 import { defined } from "../../helpers/defined.js";
+import { t } from "../../../src/i18n/index.js";
 import { createTestAppContainer } from "../../helpers/app-container.js";
 import type { AppContainer } from "../../../src/app/bootstrap/app-container.js";
 
@@ -409,26 +410,41 @@ function collectSentTexts(api: FakeBotApi): string[] {
 function emitPermissionReplied(
   summaryAggregator: { processEvent(event: Event): void },
   requestID: string,
+  reply: "once" | "always" | "reject" | null = "always",
+  sessionID = "session-1",
 ): void {
   summaryAggregator.processEvent({
     type: "permission.replied",
     properties: {
-      sessionID: "session-1",
+      sessionID,
       requestID,
-      reply: "always",
+      ...(reply ? { reply } : {}),
     },
+  } as unknown as Event);
+}
+
+function emitQuestionSettled(
+  summaryAggregator: { processEvent(event: Event): void },
+  type: "question.replied" | "question.rejected",
+  requestID: string,
+  sessionID = "session-1",
+): void {
+  summaryAggregator.processEvent({
+    type,
+    properties: { sessionID, requestID, answers: [] },
   } as unknown as Event);
 }
 
 function emitQuestionAsked(
   summaryAggregator: { processEvent(event: Event): void },
   requestID: string,
+  sessionID = "session-1",
 ): void {
   summaryAggregator.processEvent({
     type: "question.asked",
     properties: {
       id: requestID,
-      sessionID: "session-1",
+      sessionID,
       questions: [
         {
           header: "Pick",
@@ -1959,7 +1975,11 @@ describe("bot/services/event-subscription-service", () => {
     });
   });
 
-  it("clears permission prompts when OpenCode resolves pending requests", async () => {
+  function findEdit(api: FakeBotApi, messageId: number): unknown[] | undefined {
+    return api.editMessageText.mock.calls.find((call) => call[1] === messageId);
+  }
+
+  it("ends permission prompts with the outcome OpenCode reports", async () => {
     const { api, summaryAggregator } = await setupService(true);
     const { permissionManager, interactionManager } = activeContainer;
     api.sendMessage
@@ -1978,17 +1998,69 @@ describe("bot/services/event-subscription-service", () => {
     await vi.waitFor(() => {
       expect(permissionManager.getPendingCount()).toBe(1);
     });
-    expect(api.deleteMessage).toHaveBeenCalledWith(42, 501);
+    const outside = `${t("permission.outcome.always")}${t("permission.outcome.outside_suffix")}`;
+    const edit = defined(findEdit(api, 501));
+    expect(String(edit[2])).toContain("• D:/other/*");
+    expect(String(edit[2]).endsWith(`\n${outside}`)).toBe(true);
+    expect(edit[3]).toBeUndefined();
+    expect(api.deleteMessage).not.toHaveBeenCalled();
     expect(permissionManager.getRequestID(500)).toBe("permission-1");
     expect(interactionManager.getSnapshot()?.metadata.pendingCount).toBe(1);
 
-    emitPermissionReplied(summaryAggregator, "permission-1");
+    emitPermissionReplied(summaryAggregator, "permission-1", null);
 
     await vi.waitFor(() => {
       expect(permissionManager.isActive()).toBe(false);
       expect(interactionManager.getSnapshot()).toBeNull();
     });
-    expect(api.deleteMessage).toHaveBeenCalledWith(42, 500);
+    expect(
+      String(defined(findEdit(api, 500))[2]).endsWith(`\n${t("permission.outcome.settled_outside")}`),
+    ).toBe(true);
+  });
+
+  it("ends the prompts on screen as not answered on a reset", async () => {
+    const { api, summaryAggregator } = await setupService(true);
+    const { permissionManager, interactionManager } = activeContainer;
+    api.sendMessage.mockResolvedValueOnce({ message_id: 520 });
+
+    emitPermissionAsked(summaryAggregator, "permission-1");
+    await vi.waitFor(() => {
+      expect(permissionManager.getPendingCount()).toBe(1);
+    });
+
+    interactionManager.reset("abort_command");
+
+    await vi.waitFor(() => {
+      expect(findEdit(api, 520)).toBeDefined();
+    });
+    const edit = defined(findEdit(api, 520));
+    expect(String(edit[2]).endsWith(`\n${t("permission.outcome.not_answered")}`)).toBe(true);
+    expect(edit[3]).toBeUndefined();
+
+    // OpenCode's own rejection that follows the abort changes nothing.
+    emitPermissionReplied(summaryAggregator, "permission-1", "reject");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(api.editMessageText.mock.calls.filter((call) => call[1] === 520)).toHaveLength(1);
+  });
+
+  it("ends a session's prompts as not answered when its run ends", async () => {
+    const { api, summaryAggregator } = await setupService(true);
+    const { permissionManager } = activeContainer;
+    api.sendMessage.mockResolvedValueOnce({ message_id: 530 });
+
+    emitPermissionAsked(summaryAggregator, "permission-1");
+    await vi.waitFor(() => {
+      expect(permissionManager.getPendingCount()).toBe(1);
+    });
+
+    emitSessionIdle(summaryAggregator);
+
+    await vi.waitFor(() => {
+      expect(permissionManager.isActive()).toBe(false);
+    });
+    expect(
+      String(defined(findEdit(api, 530))[2]).endsWith(`\n${t("permission.outcome.not_answered")}`),
+    ).toBe(true);
   });
 
   it("discards a permission prompt resolved while its Telegram message is being sent", async () => {
@@ -2164,6 +2236,149 @@ describe("bot/services/event-subscription-service", () => {
 
     expect(interactionManager.getWaitingKind()).toBeNull();
     expect(permissionManager.getPendingCount()).toBe(1);
+  });
+
+  describe("subagent questions and polls settled outside Telegram", () => {
+    function pollEdits(api: FakeBotApi, messageId: number): string[] {
+      return api.editMessageText.mock.calls
+        .filter((call) => call[1] === messageId)
+        .map((call) => JSON.stringify(call));
+    }
+
+    it("shows a subagent's question in the followed chat", async () => {
+      const { api, summaryAggregator } = await setupService(true);
+      const { questionManager } = getInteractionManagers();
+
+      emitSubagentStart(summaryAggregator);
+      emitQuestionAsked(summaryAggregator, "question-child", "child-session-1");
+
+      await vi.waitFor(() => {
+        expect(questionManager.getActiveMessageId()).not.toBeNull();
+      });
+      expect(questionManager.getRequestID()).toBe("question-child");
+      expect(questionManager.getSessionId()).toBe("child-session-1");
+      expect(JSON.stringify(api.sendMessage.mock.calls)).toContain("Which option for question-child?");
+    });
+
+    it("ignores a question from a session the chat does not follow", async () => {
+      const { summaryAggregator } = await setupService(true);
+      const { questionManager, interactionManager } = getInteractionManagers();
+
+      emitQuestionAsked(summaryAggregator, "question-other", "other-session");
+      await settle();
+
+      expect(questionManager.isActive()).toBe(false);
+      expect(interactionManager.getWaitingKind()).toBeNull();
+    });
+
+    it("queues a poll of another session and shows it once the first is settled outside Telegram", async () => {
+      const { api, summaryAggregator } = await setupService(true);
+      const { questionManager, interactionManager } = getInteractionManagers();
+      let nextMessageId = 700;
+      api.sendMessage.mockImplementation(async () => ({ message_id: nextMessageId++ }));
+
+      emitSubagentStart(summaryAggregator, "1");
+      emitSubagentStart(summaryAggregator, "2");
+      emitQuestionAsked(summaryAggregator, "question-a", "child-session-1");
+      await vi.waitFor(() => {
+        expect(questionManager.getActiveMessageId()).not.toBeNull();
+      });
+      const firstPollMessageId = questionManager.getActiveMessageId() ?? 0;
+
+      emitQuestionAsked(summaryAggregator, "question-b", "child-session-2");
+      await vi.waitFor(() => {
+        expect(interactionManager.getWaitingQuestionRequestIds()).toEqual(["question-b"]);
+      });
+      expect(questionManager.getRequestID()).toBe("question-a");
+
+      emitQuestionSettled(summaryAggregator, "question.replied", "question-a", "child-session-1");
+
+      await vi.waitFor(() => {
+        expect(questionManager.getRequestID()).toBe("question-b");
+        expect(questionManager.getActiveMessageId()).not.toBeNull();
+      });
+      const closed = pollEdits(api, firstPollMessageId);
+      expect(closed).toHaveLength(1);
+      expect(closed[0]).toContain(t("question.settled_outside.answered"));
+      expect(closed[0]).not.toContain("reply_markup");
+      expect(api.deleteMessage).not.toHaveBeenCalledWith(42, firstPollMessageId);
+    });
+
+    it("closes a poll cancelled outside Telegram", async () => {
+      const { api, summaryAggregator } = await setupService(true);
+      const { questionManager } = getInteractionManagers();
+      api.sendMessage.mockResolvedValueOnce({ message_id: 720 });
+
+      emitQuestionAsked(summaryAggregator, "question-1");
+      await vi.waitFor(() => {
+        expect(questionManager.getActiveMessageId()).toBe(720);
+      });
+
+      emitQuestionSettled(summaryAggregator, "question.rejected", "question-1");
+
+      await vi.waitFor(() => {
+        expect(questionManager.isActive()).toBe(false);
+      });
+      expect(pollEdits(api, 720)[0]).toContain(t("question.settled_outside.cancelled"));
+    });
+
+    it("leaves a poll answered from Telegram to its own summary", async () => {
+      const { api, summaryAggregator } = await setupService(true);
+      const { questionManager } = getInteractionManagers();
+      api.sendMessage.mockResolvedValueOnce({ message_id: 730 });
+
+      emitQuestionAsked(summaryAggregator, "question-1");
+      await vi.waitFor(() => {
+        expect(questionManager.getActiveMessageId()).toBe(730);
+      });
+      questionManager.markAnsweredFromTelegram();
+
+      emitQuestionSettled(summaryAggregator, "question.replied", "question-1");
+      await settle();
+
+      expect(questionManager.isActive()).toBe(true);
+      expect(pollEdits(api, 730)).toHaveLength(0);
+    });
+
+    it("drops a waiting poll settled outside Telegram", async () => {
+      const { summaryAggregator } = await setupService(true);
+      const { permissionManager, interactionManager } = getInteractionManagers();
+
+      emitPermissionAsked(summaryAggregator, "permission-1");
+      await vi.waitFor(() => {
+        expect(permissionManager.getPendingCount()).toBe(1);
+      });
+      emitQuestionAsked(summaryAggregator, "question-1");
+      await vi.waitFor(() => {
+        expect(interactionManager.getWaitingKind()).toBe("question");
+      });
+
+      emitQuestionSettled(summaryAggregator, "question.rejected", "question-1");
+
+      await vi.waitFor(() => {
+        expect(interactionManager.getWaitingKind()).toBeNull();
+      });
+      expect(permissionManager.getPendingCount()).toBe(1);
+    });
+
+    it("keeps a subagent's poll when the followed session's question tool fails", async () => {
+      const { summaryAggregator } = await setupService(true);
+      const { questionManager } = getInteractionManagers();
+
+      emitSubagentStart(summaryAggregator);
+      emitQuestionAsked(summaryAggregator, "question-child", "child-session-1");
+      await vi.waitFor(() => {
+        expect(questionManager.getActiveMessageId()).not.toBeNull();
+      });
+
+      const aggregator = summaryAggregator as unknown as {
+        onQuestionErrorCallback: (sessionId: string) => void;
+      };
+      aggregator.onQuestionErrorCallback("session-1");
+      await settle();
+
+      expect(questionManager.getRequestID()).toBe("question-child");
+    });
   });
 
   it("drops a released request when a full reset lands before it is shown", async () => {

@@ -187,7 +187,7 @@ describe("bot/rich-message-routing", () => {
   it("keeps an active question from falling through to a prompt", async () => {
     container.questionManager.startQuestions(
       [{ header: "Q", question: "?", options: [] }],
-      "req-1",
+      "req-1", "session-1",
     );
     // A text answer is accepted once the user picked "custom answer".
     container.interactionManager.transition({ expectedInput: "mixed" });

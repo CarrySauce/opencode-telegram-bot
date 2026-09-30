@@ -1,9 +1,25 @@
 import { Context, InlineKeyboard } from "grammy";
 import type { AppContainer } from "../../app/bootstrap/app-container.js";
 import { logger } from "../../utils/logger.js";
-import type { PermissionRequest } from "../../app/types/permission.js";
+import type {
+  PermissionOutcome,
+  PermissionPromptChange,
+  PermissionReply,
+  PermissionRequest,
+} from "../../app/types/permission.js";
 import type { I18nKey } from "../../i18n/en.js";
 import { t } from "../../i18n/index.js";
+
+const TELEGRAM_MESSAGE_LIMIT = 4096;
+const PATTERN_PREFIX = "• ";
+const CUT_SUFFIX = "…\n";
+const CUT_PATTERNS_LINE = `${PATTERN_PREFIX}${CUT_SUFFIX}`;
+
+const OUTCOME_KEYS: Record<PermissionReply, I18nKey> = {
+  once: "permission.outcome.once",
+  always: "permission.outcome.always",
+  reject: "permission.outcome.reject",
+};
 
 export type PermissionInteractionDeps = Pick<AppContainer, "interactionManager">;
 
@@ -155,27 +171,140 @@ export async function showPermissionRequest(
 }
 
 /**
- * Format permission request text
+ * Edit prompts whose requests changed: an ended prompt keeps its text and gets its
+ * outcome line instead of the buttons, a prompt left with fewer grouped requests shows
+ * the lower count. Then the slot follows what is still open.
  */
-function formatPermissionText(request: PermissionRequest, groupedCount: number = 1): string {
+export async function applyPermissionPromptChanges(
+  bot: Context["api"],
+  chatId: number,
+  changes: PermissionPromptChange[],
+  deps: Pick<AppContainer, "interactionManager" | "permissionManager">,
+): Promise<void> {
+  for (const change of changes) {
+    const edit = change.outcome
+      ? bot.editMessageText(
+          chatId,
+          change.messageId,
+          formatPermissionText(change.request, 1, formatOutcomeLine(change.outcome)),
+        )
+      : bot.editMessageText(
+          chatId,
+          change.messageId,
+          formatPermissionText(change.request, change.openCount),
+          { reply_markup: buildPermissionKeyboard() },
+        );
+
+    await edit.catch((err) => {
+      logger.warn(`[PermissionHandler] Failed to update permission prompt ${change.messageId}:`, err);
+    });
+  }
+
+  if (changes.length > 0) {
+    syncPermissionInteractionState(deps);
+  }
+}
+
+/**
+ * The answer did not reach OpenCode: the prompt stays answerable and says so. When the
+ * prompt cannot be edited, the warning comes as a message of its own.
+ */
+export async function showPermissionDeliveryWarning(
+  bot: Context["api"],
+  chatId: number,
+  change: PermissionPromptChange,
+  deps: Pick<AppContainer, "interactionManager" | "permissionManager">,
+): Promise<void> {
+  const warning = t("permission.delivery_failed");
+
+  try {
+    await bot.editMessageText(
+      chatId,
+      change.messageId,
+      formatPermissionText(change.request, change.openCount, warning),
+      { reply_markup: buildPermissionKeyboard() },
+    );
+  } catch (err) {
+    if (isMessageNotModifiedError(err)) {
+      // The warning from an earlier failed tap is still on the prompt.
+      syncPermissionInteractionState(deps);
+      return;
+    }
+
+    logger.warn(`[PermissionHandler] Failed to show the delivery warning in the prompt:`, err);
+    await bot.sendMessage(chatId, warning).catch((sendErr) => {
+      logger.error("[PermissionHandler] Failed to send the delivery warning:", sendErr);
+    });
+  }
+
+  syncPermissionInteractionState(deps);
+}
+
+function isMessageNotModifiedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.toLowerCase().includes("message is not modified");
+}
+
+function formatOutcomeLine(outcome: PermissionOutcome): string {
+  switch (outcome.kind) {
+    case "replied": {
+      const line = t(OUTCOME_KEYS[outcome.reply]);
+      return outcome.outside ? `${line}${t("permission.outcome.outside_suffix")}` : line;
+    }
+    case "settled_outside":
+      return t("permission.outcome.settled_outside");
+    case "not_answered":
+      return t("permission.outcome.not_answered");
+  }
+}
+
+/**
+ * Format permission request text, optionally closed by a status line. Patterns are cut
+ * when the whole text would not fit into one Telegram message.
+ */
+function formatPermissionText(
+  request: PermissionRequest,
+  groupedCount: number = 1,
+  statusLine?: string,
+): string {
   const emoji = PERMISSION_EMOJIS[request.permission] || "🔐";
   const nameKey = PERMISSION_NAME_KEYS[request.permission];
   const name = nameKey ? t(nameKey) : request.permission;
 
-  let text = t("permission.header", { emoji, name });
+  const header = t("permission.header", { emoji, name });
+  const grouped = groupedCount > 1 ? t("permission.grouped_count", { count: groupedCount }) : "";
+  const status = statusLine ? `\n${statusLine}` : "";
 
   // Show patterns (commands/files)
-  if (request.patterns.length > 0) {
-    request.patterns.forEach((pattern) => {
-      text += `• ${pattern}\n`;
-    });
+  let budget = TELEGRAM_MESSAGE_LIMIT - header.length - grouped.length - status.length;
+  let patterns = "";
+  for (const [index, pattern] of request.patterns.entries()) {
+    const line = `${PATTERN_PREFIX}${pattern}\n`;
+    // Keep room for the cut marker while more patterns follow.
+    const reserve = index === request.patterns.length - 1 ? 0 : CUT_PATTERNS_LINE.length;
+    if (line.length + reserve <= budget) {
+      patterns += line;
+      budget -= line.length;
+      continue;
+    }
+
+    // The pattern that does not fit is shortened, so the user still sees what is asked.
+    const room = budget - CUT_PATTERNS_LINE.length;
+    patterns +=
+      room > 0
+        ? `${PATTERN_PREFIX}${sliceOnSafeBoundary(pattern, room)}${CUT_SUFFIX}`
+        : CUT_PATTERNS_LINE;
+    break;
   }
 
-  if (groupedCount > 1) {
-    text += t("permission.grouped_count", { count: groupedCount });
-  }
+  return `${header}${patterns}${grouped}${status}`;
+}
 
-  return text;
+function sliceOnSafeBoundary(text: string, maxLength: number): string {
+  const end = Math.min(text.length, maxLength);
+  const code = text.charCodeAt(end - 1);
+  // Never split a surrogate pair.
+  return text.slice(0, code >= 0xd800 && code <= 0xdbff ? end - 1 : end);
 }
 
 /**

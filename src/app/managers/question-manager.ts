@@ -14,10 +14,11 @@ export class QuestionManager {
   }
 
   /**
-   * Opens the question slot, replacing a poll already on screen. Refuses while
-   * permission prompts hold the slot: the poll has to wait for them.
+   * Opens the question slot, replacing a poll of the same session already on screen.
+   * Refuses while permission prompts or another session's poll hold the slot: the
+   * poll has to wait for them.
    */
-  startQuestions(questions: Question[], requestID: string): boolean {
+  startQuestions(questions: Question[], requestID: string, sessionId: string): boolean {
     const current = this.interactionManager.getSnapshot();
     logger.debug(
       `[QuestionManager] startQuestions called: slot=${current?.kind ?? "none"}, newQuestions=${questions.length}, requestID=${requestID}`,
@@ -26,6 +27,14 @@ export class QuestionManager {
     if (current?.kind === "permission") {
       logger.info(
         `[QuestionManager] Permission prompts are on screen, not starting poll: requestID=${requestID}`,
+      );
+      return false;
+    }
+
+    const onScreen = this.state;
+    if (onScreen && onScreen.sessionId !== sessionId) {
+      logger.info(
+        `[QuestionManager] A poll of another session is on screen, not starting poll: requestID=${requestID}`,
       );
       return false;
     }
@@ -50,6 +59,8 @@ export class QuestionManager {
         activeMessageId: null,
         messageIds: [],
         requestID,
+        sessionId,
+        answeredFromTelegram: false,
       },
     });
     return true;
@@ -57,6 +68,22 @@ export class QuestionManager {
 
   getRequestID(): string | null {
     return this.state?.requestID ?? null;
+  }
+
+  getSessionId(): string | null {
+    return this.state?.sessionId ?? null;
+  }
+
+  /** The poll's answers are being sent from Telegram: OpenCode's own reply event is ours. */
+  markAnsweredFromTelegram(): void {
+    const state = this.state;
+    if (state) {
+      state.answeredFromTelegram = true;
+    }
+  }
+
+  isAnsweredFromTelegram(): boolean {
+    return this.state?.answeredFromTelegram ?? false;
   }
 
   getCurrentQuestion(): Question | null {

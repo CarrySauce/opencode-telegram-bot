@@ -66,7 +66,12 @@ export async function loadRecentSessions(limit: number): Promise<RecentSession[]
     if (permissionResult.error || !permissionResult.data) warnFailed("pending permissions", permissionResult.error);
 
     const roots = new Set(group.map((session) => session.id));
-    const questions = new Set((questionResult.data ?? []).map((request) => request.sessionID));
+    // A subagent's pending request marks the root it runs under.
+    const questions = new Set<string>();
+    for (const request of questionResult.data ?? []) {
+      const chain = await resolveSessionParentChain(request.sessionID, directory, roots);
+      if (chain) questions.add(chain.root);
+    }
     const permissions = new Set<string>();
     for (const request of permissionResult.data ?? []) {
       const chain = await resolveSessionParentChain(request.sessionID, directory, roots);

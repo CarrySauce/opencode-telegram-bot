@@ -45,7 +45,7 @@ No public inbound ports are required for normal usage.
 
 - Fetch last N sessions (name + date)
 - Select an existing session, show the last user input as a quote and the last assistant reply in full, then follow its live updates
-- Browse up to `SESSIONS_LIST_LIMIT` recent root sessions across projects and git worktrees with running, idle, question and permission status; select one to switch project and follow it, including after detach
+- Browse up to `SESSIONS_LIST_LIMIT` recent root sessions across projects and git worktrees with running, idle, question and permission status (a question or permission request a subagent is waiting on counts for its root session); select one to switch project and follow it, including after detach
 - Switching to an existing session adopts the agent, model, and variant it last ran with
 - Create a new session
 - Use OpenCode-generated session title (based on conversation); a session OpenCode has not named yet is shown as "new session" wherever the bot names a session, and `/status`, `/rename` and `/detach` name the current session with the title OpenCode has for it at that moment
@@ -57,9 +57,14 @@ No public inbound ports are required for normal usage.
 - Interrupt current task (ESC equivalent)
 - Optionally accept text, transcribed voice, photos, rich formatted messages with photos, supported documents, and media groups sent while a task is running, at most `MAX_QUEUED_PROMPTS` (5) waiting at a time: on OpenCode V2 they wait in the session inbox and are steered into the running turn (Steer, the V2 default) or start their own run after it (Queue); on V1 the bot holds them, with at most 20 MiB of raw Telegram media bytes checked from reliable `file_size` before downloads; the V1 On/Off choice and the V2 mode are kept separately, so switching versions changes neither
 - Handle OpenCode questions with inline options and custom text answers; the custom answer button is offered only when the question accepts a custom answer
+- Questions asked by a subagent of the followed session appear in the chat like the main agent's and are answered to that subagent
+- A question answered or cancelled outside Telegram (OpenCode TUI, web, another client) closes the poll on screen: its buttons go and a line says it was answered or cancelled outside Telegram
 - In a multi-select question the custom text becomes one more tickable row next to the options, and Done sends it together with the ticked options
 - Send selected/custom answers back to OpenCode (`question.reply`); on V2 a tapped choice is sent as the value OpenCode expects, while the buttons and the summary show its label
-- Handle permission requests interactively (`allow once` / `always` / `reject`)
+- Handle permission requests interactively (`allow once` / `always` / `reject`), from the main agent and from subagents of the followed session
+- A permission prompt stays in the chat when it ends: its buttons go and a last line names the outcome — the decision tapped here, the decision made outside Telegram (or just that it was answered there, when OpenCode does not say how), or "not answered" when it was dropped by `/abort`, `/detach`, `/opencode_stop` or the end of the run
+- An answer that does not reach OpenCode leaves the prompt answerable with a warning line; tapping again sends it again
+- After the event stream reconnects, prompts on screen that OpenCode no longer has pending are closed as answered outside Telegram
 
 ### Result delivery
 
@@ -148,7 +153,7 @@ Text messages (non-commands) are treated as prompts for OpenCode only when no bl
 Interaction routing rules:
 
 - Only one interactive flow can be active at a time (inline menu, permission, question, rename, commands, skills, messages)
-- An agent question and agent permission requests are shown one after another: the one arriving second waits until the one on screen is answered or cancelled; `/abort`, `/detach` and `/opencode_stop` drop both
+- Agent questions and permission requests are shown one after another: one arriving while another holds the slot waits, and waiting requests appear in the order they arrived; a new question from the session whose poll is on screen replaces it, one from another session (a parallel subagent) waits; `/abort`, `/detach` and `/opencode_stop` drop everything waiting
 - While an interaction is active, unrelated input is blocked with a contextual hint
 - Allowed utility commands during active interactions: `/help`, `/status`, `/abort`, `/detach`, `/opencode_stop`
 - Unknown slash commands return an explicit fallback message

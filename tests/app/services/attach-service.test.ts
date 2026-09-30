@@ -43,6 +43,8 @@ const mocked = vi.hoisted(() => ({
   keyboardUpdateContextMock: vi.fn(),
   showCurrentQuestionMock: vi.fn(),
   showPermissionRequestMock: vi.fn(),
+  closeQuestionSettledOutsideMock: vi.fn(),
+  applyPermissionPromptChangesMock: vi.fn(),
   ensureEventSubscriptionMock: vi.fn(),
   stopEventListeningMock: vi.fn(),
 }));
@@ -80,10 +82,12 @@ vi.mock("../../../src/opencode/events.js", () => ({
 
 vi.mock("../../../src/bot/menus/question-menu.js", () => ({
   showCurrentQuestion: mocked.showCurrentQuestionMock,
+  closeQuestionSettledOutside: mocked.closeQuestionSettledOutsideMock,
 }));
 
 vi.mock("../../../src/bot/menus/permission-menu.js", () => ({
   showPermissionRequest: mocked.showPermissionRequestMock,
+  applyPermissionPromptChanges: mocked.applyPermissionPromptChangesMock,
 }));
 
 function createDeps(): AppContainer {
@@ -196,6 +200,10 @@ describe("attach/service", () => {
     mocked.showCurrentQuestionMock.mockResolvedValue(undefined);
     mocked.showPermissionRequestMock.mockReset();
     mocked.showPermissionRequestMock.mockResolvedValue(undefined);
+    mocked.closeQuestionSettledOutsideMock.mockReset();
+    mocked.closeQuestionSettledOutsideMock.mockResolvedValue(undefined);
+    mocked.applyPermissionPromptChangesMock.mockReset();
+    mocked.applyPermissionPromptChangesMock.mockResolvedValue(undefined);
     mocked.ensureEventSubscriptionMock.mockReset();
     mocked.ensureEventSubscriptionMock.mockResolvedValue(undefined);
     mocked.stopEventListeningMock.mockReset();
@@ -310,6 +318,45 @@ describe("attach/service", () => {
     expect(mocked.showPermissionRequestMock).not.toHaveBeenCalled();
   });
 
+  it("restores a subagent's pending question through its parent chain", async () => {
+    mocked.questionListMock.mockResolvedValue({
+      data: [{ id: "question-child", sessionID: "child", questions: [] }],
+      error: null,
+    });
+    mocked.sessionGetMock.mockResolvedValue({ data: { parentID: "session-1" }, error: null });
+
+    const result = await attachToSession({
+      ...deps, bot: createBot(), chatId: 777, session: mocked.currentSession!,
+      ensureEventSubscription: mocked.ensureEventSubscriptionMock,
+    });
+
+    expect(result.restoredQuestion).toBe(true);
+    expect(mocked.registerRestoredPermissionChildMock).toHaveBeenCalledWith("child", "session-1");
+    expect(mocked.showCurrentQuestionMock).toHaveBeenCalledOnce();
+    expect(deps.questionManager.getRequestID()).toBe("question-child");
+    expect(deps.questionManager.getSessionId()).toBe("child");
+  });
+
+  it("queues the pending questions after the first one", async () => {
+    mocked.questionListMock.mockResolvedValue({
+      data: [
+        { id: "question-root", sessionID: "session-1", questions: [] },
+        { id: "question-child", sessionID: "child", questions: [] },
+      ],
+      error: null,
+    });
+    mocked.sessionGetMock.mockResolvedValue({ data: { parentID: "session-1" }, error: null });
+
+    await attachToSession({
+      ...deps, bot: createBot(), chatId: 777, session: mocked.currentSession!,
+      ensureEventSubscription: mocked.ensureEventSubscriptionMock,
+    });
+
+    expect(mocked.showCurrentQuestionMock).toHaveBeenCalledOnce();
+    expect(deps.questionManager.getRequestID()).toBe("question-root");
+    expect(deps.interactionManager.getWaitingQuestionRequestIds()).toEqual(["question-child"]);
+  });
+
   it("restores the saved current session on startup", async () => {
     const restored = await restoreAttachedCurrentSession({
       ...deps,
@@ -411,6 +458,121 @@ describe("attach/service", () => {
     await restorePendingInteractionsAfterReconnect({ ...deps, bot: createBot(), chatId: 777 });
 
     expect(mocked.showPermissionRequestMock).not.toHaveBeenCalled();
+  });
+
+  describe("prompts settled while the event stream was down", () => {
+    const permission = {
+      id: "permission-1",
+      sessionID: "session-1",
+      permission: "edit",
+      patterns: ["*"],
+      metadata: {},
+      always: [],
+    };
+
+    beforeEach(() => {
+      container.attachManager.attach("session-1", "D:\\Projects\\Repo");
+    });
+
+    it("ends a permission prompt OpenCode no longer lists as answered outside Telegram", async () => {
+      container.permissionManager.startPermission(permission, 501);
+
+      await restorePendingInteractionsAfterReconnect({ ...deps, bot: createBot(), chatId: 777 });
+
+      expect(mocked.applyPermissionPromptChangesMock).toHaveBeenCalledWith(
+        expect.anything(),
+        777,
+        [expect.objectContaining({ messageId: 501, outcome: { kind: "settled_outside" } })],
+        expect.anything(),
+      );
+      expect(container.permissionManager.isActive()).toBe(false);
+    });
+
+    it("closes a poll OpenCode no longer lists", async () => {
+      container.questionManager.startQuestions([], "question-1", "session-1");
+
+      await restorePendingInteractionsAfterReconnect({ ...deps, bot: createBot(), chatId: 777 });
+
+      expect(mocked.closeQuestionSettledOutsideMock).toHaveBeenCalledWith(
+        expect.anything(),
+        777,
+        "answered",
+        expect.anything(),
+      );
+    });
+
+    it("leaves answers being sent from Telegram to that send", async () => {
+      container.permissionManager.startPermission(permission, 501);
+      container.permissionManager.markSending(501, "once", false);
+
+      await restorePendingInteractionsAfterReconnect({ ...deps, bot: createBot(), chatId: 777 });
+
+      expect(mocked.applyPermissionPromptChangesMock).not.toHaveBeenCalled();
+      expect(container.permissionManager.isActiveMessage(501)).toBe(true);
+
+      container.permissionManager.clear();
+      container.questionManager.startQuestions([], "question-1", "session-1");
+      container.questionManager.markAnsweredFromTelegram();
+
+      await restorePendingInteractionsAfterReconnect({ ...deps, bot: createBot(), chatId: 777 });
+
+      expect(mocked.closeQuestionSettledOutsideMock).not.toHaveBeenCalled();
+    });
+
+    it("drops waiting requests OpenCode no longer lists", async () => {
+      container.questionManager.startQuestions([], "question-1", "session-1");
+      container.interactionManager.waitPermission(permission);
+      container.interactionManager.waitQuestion([], "question-2", "child");
+      mocked.questionListMock.mockResolvedValue({
+        data: [{ id: "question-1", sessionID: "session-1", questions: [] }],
+        error: null,
+      });
+
+      await restorePendingInteractionsAfterReconnect({ ...deps, bot: createBot(), chatId: 777 });
+
+      expect(container.interactionManager.getWaitingKind()).toBeNull();
+      expect(mocked.closeQuestionSettledOutsideMock).not.toHaveBeenCalled();
+    });
+
+    it("leaves a prompt that arrived while the lists were loading", async () => {
+      mocked.permissionListMock.mockImplementation(async () => {
+        container.permissionManager.startPermission(permission, 502);
+        return { data: [], error: null };
+      });
+
+      await restorePendingInteractionsAfterReconnect({ ...deps, bot: createBot(), chatId: 777 });
+
+      expect(mocked.applyPermissionPromptChangesMock).not.toHaveBeenCalled();
+      expect(container.permissionManager.isActiveMessage(502)).toBe(true);
+      expect(container.permissionManager.isResolved("permission-1")).toBe(false);
+    });
+
+    it("does not restore a question released from the queue that is still being shown", async () => {
+      container.interactionManager.setOnWaitingRequestReady(() => new Promise<void>(() => {}));
+      container.permissionManager.startPermission({ ...permission, id: "permission-2" }, 503);
+      container.interactionManager.waitQuestion([], "question-2", "session-1");
+      container.permissionManager.endPrompt(503, { kind: "replied", reply: "once", outside: false });
+      container.interactionManager.clearKind("permission", "permission_replied");
+      mocked.questionListMock.mockResolvedValue({
+        data: [{ id: "question-2", sessionID: "session-1", questions: [] }],
+        error: null,
+      });
+
+      await restorePendingInteractionsAfterReconnect({ ...deps, bot: createBot(), chatId: 777 });
+
+      expect(mocked.showCurrentQuestionMock).not.toHaveBeenCalled();
+      expect(container.questionManager.isActive()).toBe(false);
+    });
+
+    it("checks nothing against a list that failed to load", async () => {
+      container.permissionManager.startPermission(permission, 501);
+      mocked.permissionListMock.mockResolvedValue({ data: undefined, error: new Error("boom") });
+
+      await restorePendingInteractionsAfterReconnect({ ...deps, bot: createBot(), chatId: 777 });
+
+      expect(mocked.applyPermissionPromptChangesMock).not.toHaveBeenCalled();
+      expect(container.permissionManager.isActiveMessage(501)).toBe(true);
+    });
   });
 
   it("skips the reconnect restore when no session is followed", async () => {
