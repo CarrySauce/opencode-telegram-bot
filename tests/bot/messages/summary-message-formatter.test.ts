@@ -403,4 +403,126 @@ describe("bot/messages/summary-message-formatter", () => {
     const writeFile = prepareCodeFile("content", "D:/repo/src/absolute-write.ts", "write");
     expect(writeFile?.buffer.toString("utf8")).toContain("Write File/Path: src/absolute-write.ts");
   });
+
+  describe("apply_patch per file", () => {
+    const patchInfo = (
+      status: "running" | "completed" | "error",
+      fields: {
+        input?: Record<string, unknown>;
+        metadata?: Record<string, unknown>;
+        title?: string;
+      },
+    ) => ({
+      sessionId: "s1",
+      messageId: "m-patch",
+      callId: "c-patch",
+      tool: "apply_patch",
+      state: { status } as never,
+      ...fields,
+    });
+
+    it("keeps the V1 single-file line with relative forward-slash path and counts from its diff", () => {
+      const text = formatToolInfo(
+        patchInfo("completed", {
+          title: "Success. Updated the following files:\nM src\\main\\ChatConfig.kt",
+          metadata: {
+            diff: "combined",
+            files: [
+              {
+                filePath: "D:\\repo\\src\\main\\ChatConfig.kt",
+                relativePath: "src\\main\\ChatConfig.kt",
+                type: "update",
+                diff: ["--- a", "+++ b", "@@ -1,2 +1,3 @@", "-old", "+new", "+more", " same"].join(
+                  "\n",
+                ),
+                additions: 9,
+                deletions: 9,
+              },
+            ],
+          },
+        }),
+      );
+
+      expect(text).toBe("🩹 apply_patch src/main/ChatConfig.kt (+2 -1)");
+    });
+
+    it("lists every file of a multi-file patch on its own line", () => {
+      const text = formatToolInfo(
+        patchInfo("completed", {
+          metadata: {
+            files: [
+              { filePath: "src/a.ts", relativePath: "src/a.ts", patch: "+one\n-two" },
+              { filePath: "src/new.ts", relativePath: "src/new.ts", patch: "+x\n+y" },
+              { filePath: "src/gone.ts", relativePath: "src/gone.ts", patch: "-x" },
+              { relativePath: "src/old.ts", movePath: "D:/repo/src/moved.ts", diff: "" },
+              { file: "src/v2.ts", relativePath: "src/v2.ts", additions: 4, deletions: 1 },
+            ],
+          },
+        }),
+      );
+
+      expect(text).toBe(
+        [
+          "🩹 apply_patch src/a.ts (+1 -1)",
+          "🩹 apply_patch src/new.ts (+2)",
+          "🩹 apply_patch src/gone.ts (-1)",
+          "🩹 apply_patch src/moved.ts",
+          "🩹 apply_patch src/v2.ts (+4 -1)",
+        ].join("\n"),
+      );
+    });
+
+    it("names the first file of a running patch from its headers, never the patch text", () => {
+      const patchText = [
+        "*** Begin Patch",
+        "*** Update File: src/first.ts",
+        "@@",
+        "-a",
+        "+b",
+        "*** Add File: src/second.ts",
+        "+c",
+        "*** End Patch",
+      ].join("\n");
+
+      expect(formatToolInfo(patchInfo("running", { input: { patchText } }))).toBe(
+        "🩹 apply_patch src/first.ts",
+      );
+      expect(
+        formatToolInfo(
+          patchInfo("running", { input: { patchText: patchText.replace(/\n/g, "\r\n") } }),
+        ),
+      ).toBe("🩹 apply_patch src/first.ts");
+      expect(formatToolInfo(patchInfo("running", { input: {} }))).toBe("🩹 apply_patch");
+      expect(
+        formatToolInfo(patchInfo("running", { input: { patchText: "*** Begin Patch\n@@" } })),
+      ).toBe("🩹 apply_patch");
+    });
+
+    it("shows a failed patch as its first file without counts", () => {
+      const text = formatToolInfo(
+        patchInfo("error", {
+          input: { patchText: "*** Begin Patch\n*** Update File: src/first.ts\n@@\n-a\n+b\n+c" },
+        }),
+      );
+
+      expect(text).toBe("🩹 apply_patch src/first.ts");
+    });
+
+    it("keeps only the first file in the compact activity line", () => {
+      const running = patchInfo("running", {
+        input: { patchText: "*** Begin Patch\n*** Update File: src/first.ts\n@@\n-a\n+b" },
+      });
+      expect(formatCompactToolActivity(running, 128)).toBe("🩹 apply_patch src/first.ts");
+
+      const finished = patchInfo("completed", {
+        metadata: {
+          files: [
+            { relativePath: "src/a.ts", diff: "+one" },
+            { relativePath: "src/b.ts", diff: "+two" },
+          ],
+        },
+      });
+      expect(formatCompactToolActivity(finished, 128)).toBe("🩹 apply_patch src/a.ts (+1)");
+    });
+  });
 });

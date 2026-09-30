@@ -2339,17 +2339,21 @@ describe("summary/aggregator", () => {
       sessionId: string;
       tool: string;
       hasFileAttachment: boolean;
-      fileData: {
-        filename: string;
-        buffer: Buffer;
-      };
+      files: Array<{
+        fileData: {
+          filename: string;
+          buffer: Buffer;
+        };
+      }>;
     };
 
     expect(filePayload.sessionId).toBe("session-1");
     expect(filePayload.tool).toBe("apply_patch");
     expect(filePayload.hasFileAttachment).toBe(true);
-    expect(filePayload.fileData.filename).toBe("edit_one.ts.txt");
-    expect(filePayload.fileData.buffer.toString("utf8")).toContain("Edit File/Path: src/one.ts");
+    expect(filePayload.files[0]?.fileData.filename).toBe("edit_one.ts.txt");
+    expect(filePayload.files[0]?.fileData.buffer.toString("utf8")).toContain(
+      "Edit File/Path: src/one.ts",
+    );
   });
 
   it("sends apply_patch file using title and patchText fallback", () => {
@@ -2401,15 +2405,197 @@ describe("summary/aggregator", () => {
 
     const filePayload = defined(onToolFile.mock.calls[0]?.[0]) as {
       hasFileAttachment: boolean;
-      fileData: {
-        filename: string;
-        buffer: Buffer;
-      };
+      files: Array<{
+        fileData: {
+          filename: string;
+          buffer: Buffer;
+        };
+      }>;
     };
 
     expect(filePayload.hasFileAttachment).toBe(true);
-    expect(filePayload.fileData.filename).toBe("edit_README.md.txt");
-    expect(filePayload.fileData.buffer.toString("utf8")).toContain("Edit File/Path: README.md");
+    expect(filePayload.files[0]?.fileData.filename).toBe("edit_README.md.txt");
+    expect(filePayload.files[0]?.fileData.buffer.toString("utf8")).toContain(
+      "Edit File/Path: README.md",
+    );
+  });
+
+  it("sends one apply_patch document and one file change per changed file", () => {
+    const onTool = vi.fn();
+    const onToolFile = vi.fn();
+    const onFileChange = vi.fn();
+    summaryAggregator.setOnTool(onTool);
+    summaryAggregator.setOnToolFile(onToolFile);
+    summaryAggregator.setOnFileChange(onFileChange);
+    summaryAggregator.setSession("session-1");
+
+    summaryAggregator.processEvent({
+      type: "message.updated",
+      properties: {
+        info: {
+          id: "message-multi",
+          sessionID: "session-1",
+          role: "assistant",
+          time: { created: Date.now() },
+        },
+      },
+    } as unknown as Event);
+
+    summaryAggregator.processEvent({
+      type: "message.part.updated",
+      properties: {
+        part: {
+          id: "part-multi",
+          sessionID: "session-1",
+          messageID: "message-multi",
+          type: "tool",
+          callID: "call-apply-patch-multi",
+          tool: "apply_patch",
+          state: {
+            status: "completed",
+            title: "Success. Updated the following files:\nM src\\one.ts\nA src\\two.ts",
+            input: { patchText: "*** Begin Patch" },
+            metadata: {
+              diff: "combined",
+              files: [
+                {
+                  filePath: "D:\\repo\\src\\one.ts",
+                  relativePath: "src\\one.ts",
+                  type: "update",
+                  diff: ["--- a/src/one.ts", "+++ b/src/one.ts", "@@ -1 +1 @@", "-a", "+b"].join(
+                    "\n",
+                  ),
+                  additions: 1,
+                  deletions: 1,
+                },
+                {
+                  filePath: "D:\\repo\\src\\two.ts",
+                  relativePath: "src\\two.ts",
+                  type: "add",
+                  patch: ["--- /dev/null", "+++ b/src/two.ts", "@@ -0,0 +1,2 @@", "+x", "+y"].join(
+                    "\n",
+                  ),
+                  additions: 2,
+                  deletions: 0,
+                },
+              ],
+            },
+          },
+        },
+      },
+    } as unknown as Event);
+
+    expect(defined(onTool.mock.calls[0]?.[0])).toEqual(
+      expect.objectContaining({ tool: "apply_patch", hasFileAttachment: true }),
+    );
+    expect(onToolFile).toHaveBeenCalledTimes(1);
+    const filePayload = defined(onToolFile.mock.calls[0]?.[0]) as {
+      files: Array<{ fileData: { filename: string } | null; line?: string }>;
+    };
+    expect(filePayload.files.map(({ fileData }) => fileData?.filename)).toEqual([
+      "edit_one.ts.txt",
+      "edit_two.ts.txt",
+    ]);
+    expect(filePayload.files.map(({ line }) => line)).toEqual([
+      "🩹 apply_patch src/one.ts (+1 -1)",
+      "🩹 apply_patch src/two.ts (+2)",
+    ]);
+    expect(onFileChange.mock.calls.map((call) => call[1])).toEqual([
+      { file: "src/one.ts", additions: 1, deletions: 1 },
+      { file: "src/two.ts", additions: 2, deletions: 0 },
+    ]);
+  });
+
+  it("leaves an oversized apply_patch file as a text line and keeps the other documents", () => {
+    const onToolFile = vi.fn();
+    const onFileChange = vi.fn();
+    summaryAggregator.setOnToolFile(onToolFile);
+    summaryAggregator.setOnFileChange(onFileChange);
+    summaryAggregator.setSession("session-1");
+
+    summaryAggregator.processEvent({
+      type: "message.updated",
+      properties: {
+        info: {
+          id: "message-big",
+          sessionID: "session-1",
+          role: "assistant",
+          time: { created: Date.now() },
+        },
+      },
+    } as unknown as Event);
+
+    summaryAggregator.processEvent({
+      type: "message.part.updated",
+      properties: {
+        part: {
+          id: "part-big",
+          sessionID: "session-1",
+          messageID: "message-big",
+          type: "tool",
+          callID: "call-apply-patch-big",
+          tool: "apply_patch",
+          state: {
+            status: "completed",
+            input: { patchText: "*** Begin Patch" },
+            metadata: {
+              files: [
+                {
+                  relativePath: "src/huge.ts",
+                  diff: "+" + "x".repeat(101 * 1024),
+                },
+                {
+                  relativePath: "src/small.ts",
+                  diff: "+one",
+                },
+              ],
+            },
+          },
+        },
+      },
+    } as unknown as Event);
+
+    const filePayload = defined(onToolFile.mock.calls[0]?.[0]) as {
+      files: Array<{ fileData: { filename: string } | null; line?: string }>;
+    };
+    expect(filePayload.files).toEqual([
+      { fileData: null, line: "🩹 apply_patch src/huge.ts (+1)" },
+      expect.objectContaining({
+        fileData: expect.objectContaining({ filename: "edit_small.ts.txt" }),
+        line: "🩹 apply_patch src/small.ts (+1)",
+      }),
+    ]);
+    expect(onFileChange).toHaveBeenCalledTimes(2);
+  });
+
+  it("adds nothing for a failed apply_patch", () => {
+    const onToolFile = vi.fn();
+    const onFileChange = vi.fn();
+    summaryAggregator.setOnToolFile(onToolFile);
+    summaryAggregator.setOnFileChange(onFileChange);
+    summaryAggregator.setSession("session-1");
+
+    summaryAggregator.processEvent({
+      type: "message.part.updated",
+      properties: {
+        part: {
+          id: "part-failed",
+          sessionID: "session-1",
+          messageID: "message-failed",
+          type: "tool",
+          callID: "call-apply-patch-failed",
+          tool: "apply_patch",
+          state: {
+            status: "error",
+            input: { patchText: "*** Begin Patch\n*** Update File: src/one.ts\n@@\n-a\n+b" },
+            error: "patch verification failed",
+          },
+        },
+      },
+    } as unknown as Event);
+
+    expect(onToolFile).not.toHaveBeenCalled();
+    expect(onFileChange).not.toHaveBeenCalled();
   });
 
   it("fires onTokens with isCompleted=true when message has completed timestamp", () => {

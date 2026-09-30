@@ -600,6 +600,61 @@ describe("pinned/manager", () => {
       ]);
     });
 
+    it("restores every file of a multi-file apply_patch from session messages", async () => {
+      mocked.opencodeClient.session.messages.mockResolvedValue({
+        data: [
+          {
+            info: { role: "assistant" },
+            parts: [
+              {
+                type: "tool",
+                tool: "apply_patch",
+                state: {
+                  status: "completed",
+                  metadata: {
+                    diff: "combined",
+                    files: [
+                      { filePath: "D:/repo/src/a.ts", relativePath: "src/a.ts", diff: "+x\n-y" },
+                      { filePath: "D:/repo/src/b.ts", relativePath: "src/b.ts", diff: "+z" },
+                    ],
+                  },
+                },
+              },
+              {
+                type: "tool",
+                tool: "apply_patch",
+                state: {
+                  status: "completed",
+                  metadata: {
+                    files: [
+                      {
+                        file: "src/b.ts",
+                        filePath: "src/b.ts",
+                        relativePath: "src/b.ts",
+                        patch: "+one\n+two",
+                      },
+                    ],
+                  },
+                },
+              },
+              {
+                type: "tool",
+                tool: "apply_patch",
+                state: { status: "error", input: { patchText: "*** Update File: src/c.ts" } },
+              },
+            ],
+          },
+        ],
+      });
+
+      await pinnedMessageManager.onSessionChange("ses-1", "Test Session");
+
+      expect(pinnedMessageManager.getState().changedFiles).toEqual([
+        { file: "src/a.ts", additions: 1, deletions: 1 },
+        { file: "src/b.ts", additions: 3, deletions: 0 },
+      ]);
+    });
+
     it("leaves the diff list empty when neither source reports file changes", async () => {
       await pinnedMessageManager.onSessionChange("ses-1", "Test Session");
 

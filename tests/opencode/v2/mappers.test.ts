@@ -6,6 +6,7 @@ import {
   toV1Providers,
   toV1Question,
   toV1ToolInput,
+  toV1ToolMetadata,
   toV1ToolName,
   toV2PromptInput,
 } from "../../../src/opencode/v2/mappers.js";
@@ -29,6 +30,79 @@ describe("opencode/v2/mappers", () => {
     });
     expect(toV1ToolInput("apply_patch", { patch: "*** Begin Patch" })).toMatchObject({
       patchText: "*** Begin Patch",
+    });
+  });
+
+  it("adds the V1 file-change metadata while keeping the V2 files", () => {
+    const v2File = {
+      file: "src/a.ts",
+      patch: "Index: src/a.ts\n+one",
+      status: "modified",
+      additions: 1,
+      deletions: 0,
+    };
+
+    expect(toV1ToolMetadata("edit", { files: [v2File], truncated: false })).toEqual({
+      files: [v2File],
+      truncated: false,
+      diff: v2File.patch,
+      filediff: { file: "src/a.ts", patch: v2File.patch, additions: 1, deletions: 0 },
+    });
+    expect(
+      toV1ToolMetadata("apply_patch", { files: [v2File, { ...v2File, file: "b.ts" }] }),
+    ).toEqual({
+      files: [
+        { ...v2File, filePath: "src/a.ts", relativePath: "src/a.ts" },
+        { ...v2File, file: "b.ts", filePath: "b.ts", relativePath: "b.ts" },
+      ],
+    });
+
+    const v1Patch = { diff: "all", files: [{ filePath: "D:/repo/a.ts", relativePath: "a.ts" }] };
+    expect(toV1ToolMetadata("apply_patch", v1Patch)).toEqual(v1Patch);
+    const v1Edit = { diff: "d", filediff: { file: "a.ts", additions: 1, deletions: 0 } };
+    expect(toV1ToolMetadata("edit", v1Edit)).toBe(v1Edit);
+    expect(toV1ToolMetadata("read", { truncated: false })).toEqual({ truncated: false });
+  });
+
+  it("carries the V1 file-change metadata into restored patch parts", () => {
+    const message = {
+      type: "assistant",
+      id: "msg-1",
+      agent: "build",
+      model: { id: "m", providerID: "p" },
+      time: { created: 1, completed: 3 },
+      tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+      cost: 0,
+      content: [
+        {
+          type: "tool",
+          id: "call-1",
+          name: "patch",
+          state: {
+            status: "completed",
+            input: { patchText: "*** Begin Patch" },
+            content: [{ type: "text", text: "Success." }],
+            metadata: {
+              files: [
+                { file: "src/a.ts", patch: "+x", status: "added", additions: 1, deletions: 0 },
+              ],
+            },
+          },
+          time: { created: 1, ran: 2, completed: 3 },
+        },
+      ],
+    } as unknown as SessionMessageInfo;
+
+    const part = toV1Message(message, "ses-1", "D:/repo")?.parts.find(
+      (item) => item.type === "tool",
+    );
+
+    expect(part).toMatchObject({
+      tool: "apply_patch",
+      state: {
+        status: "completed",
+        metadata: { files: [{ file: "src/a.ts", relativePath: "src/a.ts" }] },
+      },
     });
   });
 

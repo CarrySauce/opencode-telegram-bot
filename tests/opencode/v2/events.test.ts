@@ -141,6 +141,79 @@ describe("opencode/v2/events", () => {
     });
   });
 
+  it("gives a V2 edit and a patch the V1 file-change metadata", () => {
+    const translate = createV2EventTranslator();
+    const file = { file: "src/a.ts", patch: "+x", status: "modified", additions: 1, deletions: 0 };
+
+    const [, , edited] = payloads(translate, [
+      event("session.tool.input.started", {
+        sessionID: SESSION,
+        assistantMessageID: MESSAGE,
+        id: "call-edit",
+        name: "edit",
+      }),
+      event("session.tool.called", {
+        sessionID: SESSION,
+        assistantMessageID: MESSAGE,
+        id: "call-edit",
+        input: { path: "src/a.ts" },
+        executed: false,
+      }),
+      event("session.tool.success", {
+        sessionID: SESSION,
+        assistantMessageID: MESSAGE,
+        id: "call-edit",
+        content: [],
+        metadata: { files: [file] },
+        executed: false,
+      }),
+    ]);
+    expect(edited).toMatchObject({
+      properties: {
+        part: {
+          tool: "edit",
+          state: { metadata: { diff: "+x", filediff: { file: "src/a.ts", additions: 1 } } },
+        },
+      },
+    });
+
+    const [, , , failed] = payloads(translate, [
+      event("session.tool.input.started", {
+        sessionID: SESSION,
+        assistantMessageID: MESSAGE,
+        id: "call-patch",
+        name: "patch",
+      }),
+      event("session.tool.called", {
+        sessionID: SESSION,
+        assistantMessageID: MESSAGE,
+        id: "call-patch",
+        input: { patchText: "*** Begin Patch" },
+        executed: false,
+      }),
+      event("session.tool.progress", {
+        sessionID: SESSION,
+        assistantMessageID: MESSAGE,
+        id: "call-patch",
+        metadata: { files: [file] },
+      }),
+      event("session.tool.failed", {
+        sessionID: SESSION,
+        assistantMessageID: MESSAGE,
+        id: "call-patch",
+        error: { type: "tool.execution", message: "patch verification failed" },
+      }),
+    ]);
+    expect(failed).toMatchObject({
+      properties: {
+        part: {
+          tool: "apply_patch",
+          state: { status: "error", metadata: { files: [{ relativePath: "src/a.ts" }] } },
+        },
+      },
+    });
+  });
+
   it("reports a failed run as a session error followed by idle", () => {
     const translate = createV2EventTranslator();
 

@@ -1,7 +1,12 @@
 import { Event, ToolState } from "@opencode-ai/sdk/v2";
 import type { Bot } from "grammy";
 import type { CodeFileData } from "../formatters/summary-formatter.js";
-import { normalizePathForDisplay, prepareCodeFile } from "../formatters/summary-formatter.js";
+import {
+  formatPatchFileLine,
+  getPatchFileChanges,
+  normalizePathForDisplay,
+  prepareCodeFile,
+} from "../formatters/summary-formatter.js";
 import type { Question, QuestionSettledOutcome } from "../types/question.js";
 import type { PermissionReply, PermissionRequest } from "../types/permission.js";
 import type { FileChange } from "../types/summary.js";
@@ -88,9 +93,16 @@ export interface ToolInfo {
   hasFileAttachment?: boolean | undefined;
 }
 
+/** A file a finished call changed; one without a document stays a text line. */
+export interface ToolFileEntry {
+  fileData: CodeFileData | null;
+  /** The file's own line, for a call that lists each file it changed. */
+  line?: string;
+}
+
 export interface ToolFileInfo extends ToolInfo {
   hasFileAttachment: true;
-  fileData: CodeFileData;
+  files: ToolFileEntry[];
 }
 
 type ToolCallback = (toolInfo: ToolInfo) => void;
@@ -193,8 +205,7 @@ type FileChangeCallback = (sessionId: string, change: FileChange) => void;
 
 type ClearedCallback = () => void;
 
-interface PreparedToolFileContext {
-  fileData: CodeFileData | null;
+interface PreparedToolFile extends ToolFileEntry {
   fileChange: FileChange | null;
 }
 
@@ -1677,12 +1688,8 @@ export class SummaryAggregator {
         if (!this.processedToolStates.has(completedKey)) {
           this.processedToolStates.add(completedKey);
 
-          const preparedFileContext = this.prepareToolFileContext(
-            part.tool,
-            input,
-            title,
-            state.metadata,
-          );
+          const preparedFiles = this.prepareToolFiles(part.tool, input, title, state.metadata);
+          const hasFileAttachment = preparedFiles.some((file) => file.fileData);
 
           const toolData: ToolInfo = {
             sessionId: part.sessionID,
@@ -1693,7 +1700,7 @@ export class SummaryAggregator {
             input,
             title,
             metadata: state.metadata,
-            hasFileAttachment: !!preparedFileContext.fileData,
+            hasFileAttachment,
           };
 
           logger.debug(
@@ -1705,27 +1712,37 @@ export class SummaryAggregator {
             this.scheduleOutbound(() => callback(toolData), false);
           }
 
-          if (preparedFileContext.fileData && this.onToolFileCallback) {
+          if (hasFileAttachment && this.onToolFileCallback) {
             logger.debug(
-              `[Aggregator] Sending ${part.tool} file: ${preparedFileContext.fileData.filename} (${preparedFileContext.fileData.buffer.length} bytes)`,
+              `[Aggregator] Sending ${part.tool} files: ${preparedFiles
+                .map(({ fileData }) =>
+                  fileData ? `${fileData.filename} (${fileData.buffer.length} bytes)` : "text line",
+                )
+                .join(", ")}`,
             );
             const callback = this.onToolFileCallback;
-            const fileData = preparedFileContext.fileData;
+            const files = preparedFiles.map(({ fileData, line }): ToolFileEntry => ({
+              fileData,
+              ...(line !== undefined ? { line } : {}),
+            }));
             this.scheduleOutbound(
               () =>
                 callback({
                   ...toolData,
                   hasFileAttachment: true,
-                  fileData,
+                  files,
                 }),
               false,
             );
           }
 
-          if (preparedFileContext.fileChange && this.onFileChangeCallback) {
+          if (this.onFileChangeCallback) {
             const callback = this.onFileChangeCallback;
-            const fileChange = preparedFileContext.fileChange;
-            this.scheduleOutbound(() => callback(part.sessionID, fileChange), false);
+            for (const { fileChange } of preparedFiles) {
+              if (fileChange) {
+                this.scheduleOutbound(() => callback(part.sessionID, fileChange), false);
+              }
+            }
           }
         }
       }
@@ -2134,12 +2151,12 @@ export class SummaryAggregator {
     return texts.filter((text) => !isUpstreamEmptyResponseText(text, isFinal)).join("");
   }
 
-  private prepareToolFileContext(
+  private prepareToolFiles(
     tool: string,
     input: { [key: string]: unknown } | undefined,
     title: string | undefined,
     metadata: { [key: string]: unknown } | undefined,
-  ): PreparedToolFileContext {
+  ): PreparedToolFile[] {
     if (tool === "write" && input) {
       const filePath =
         typeof input.filePath === "string" ? normalizePathForDisplay(input.filePath) : "";
@@ -2147,17 +2164,19 @@ export class SummaryAggregator {
       const hasContent = typeof input.content === "string";
 
       if (!filePath || !hasContent) {
-        return { fileData: null, fileChange: null };
+        return [];
       }
 
-      return {
-        fileData: prepareCodeFile(content, filePath, "write"),
-        fileChange: {
-          file: filePath,
-          additions: content.split("\n").length,
-          deletions: 0,
+      return [
+        {
+          fileData: prepareCodeFile(content, filePath, "write"),
+          fileChange: {
+            file: filePath,
+            additions: content.split("\n").length,
+            deletions: 0,
+          },
         },
-      };
+      ];
     }
 
     if (tool === "edit" && metadata) {
@@ -2169,20 +2188,35 @@ export class SummaryAggregator {
       const diffText = typeof metadata.diff === "string" ? metadata.diff : "";
 
       if (!filePath || !diffText) {
-        return { fileData: null, fileChange: null };
+        return [];
       }
 
-      return {
-        fileData: prepareCodeFile(diffText, filePath, "edit"),
-        fileChange: {
-          file: filePath,
-          additions: typeof filediff?.additions === "number" ? filediff.additions : 0,
-          deletions: typeof filediff?.deletions === "number" ? filediff.deletions : 0,
+      return [
+        {
+          fileData: prepareCodeFile(diffText, filePath, "edit"),
+          fileChange: {
+            file: filePath,
+            additions: typeof filediff?.additions === "number" ? filediff.additions : 0,
+            deletions: typeof filediff?.deletions === "number" ? filediff.deletions : 0,
+          },
         },
-      };
+      ];
     }
 
     if (tool === "apply_patch") {
+      const changes = getPatchFileChanges(metadata);
+      if (changes.length > 0) {
+        return changes.map((change) => ({
+          fileData: change.diff ? prepareCodeFile(change.diff, change.path, "edit") : null,
+          fileChange: {
+            file: change.path,
+            additions: change.additions,
+            deletions: change.deletions,
+          },
+          line: formatPatchFileLine(change),
+        }));
+      }
+
       const filediff = isRecord(metadata?.filediff) ? metadata.filediff : undefined;
 
       const filePathFromInput =
@@ -2205,7 +2239,7 @@ export class SummaryAggregator {
             : "";
 
       if (!filePath) {
-        return { fileData: null, fileChange: null };
+        return [];
       }
 
       const fileChange = filediff
@@ -2225,13 +2259,11 @@ export class SummaryAggregator {
             })()
           : null;
 
-      return {
-        fileData: diffText ? prepareCodeFile(diffText, filePath, "edit") : null,
-        fileChange,
-      };
+      const fileData = diffText ? prepareCodeFile(diffText, filePath, "edit") : null;
+      return fileData || fileChange ? [{ fileData, fileChange }] : [];
     }
 
-    return { fileData: null, fileChange: null };
+    return [];
   }
 
   private hashString(str: string): string {

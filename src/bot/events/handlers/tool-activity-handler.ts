@@ -10,6 +10,7 @@ import { renderSubagentCard } from "../../../app/formatters/subagent-formatter.j
 import {
   RUNNING_ICON,
   appendDuration,
+  appendDurationToFirstLine,
   formatDuration,
   formatDurationOverHours,
 } from "../../../app/formatters/duration-formatter.js";
@@ -410,10 +411,13 @@ export function registerToolActivityHandlers(deps: ToolActivityDeps): void {
       const message = formatToolInfo(toolInfo);
       if (message) {
         const durationMs = runtime.takeCompletedToolDuration(toolInfo.sessionId, toolInfo.callId);
+        // A patch lists one line per file: the duration stays on the line that was running
+        const withDuration =
+          toolInfo.tool === "apply_patch" ? appendDurationToFirstLine : appendDuration;
         runtime.toolCallStreamer.replaceByPrefix(
           toolInfo.sessionId,
           getLiveToolPrefix(toolInfo.callId),
-          durationMs === undefined ? message : appendDuration(message, formatDuration(durationMs)),
+          durationMs === undefined ? message : withDuration(message, formatDuration(durationMs)),
           getToolStreamKey(toolInfo.tool),
         );
         unpinLiveToolLine(runtime, toolInfo);
@@ -469,23 +473,41 @@ export function registerToolActivityHandlers(deps: ToolActivityDeps): void {
 
     try {
       await runtime.letOutRepliesBeforeDocument(fileInfo.sessionId);
-      runtime.takeCompletedToolDuration(fileInfo.sessionId, fileInfo.callId);
-      runtime.toolCallStreamer.removeByPrefix(
-        fileInfo.sessionId,
-        getLiveToolPrefix(fileInfo.callId),
-        getToolStreamKey(fileInfo.tool),
-        true,
+      const durationMs = runtime.takeCompletedToolDuration(fileInfo.sessionId, fileInfo.callId);
+      const livePrefix = getLiveToolPrefix(fileInfo.callId);
+      const streamKey = getToolStreamKey(fileInfo.tool);
+      // A file whose document was too big keeps its line where the running line was
+      const textLines = fileInfo.files.flatMap(({ fileData, line }) =>
+        !fileData && line ? [line] : [],
       );
+      if (textLines.length > 0) {
+        const text = textLines.join("\n");
+        const firstFileIsText = !fileInfo.files[0]?.fileData;
+        runtime.toolCallStreamer.replaceByPrefix(
+          fileInfo.sessionId,
+          livePrefix,
+          firstFileIsText && durationMs !== undefined
+            ? appendDurationToFirstLine(text, formatDuration(durationMs))
+            : text,
+          streamKey,
+        );
+        unpinLiveToolLine(runtime, fileInfo);
+      } else {
+        runtime.toolCallStreamer.removeByPrefix(fileInfo.sessionId, livePrefix, streamKey, true);
+      }
       runtime.toolCallStreamer.beginDocumentBoundary(fileInfo.sessionId);
       await runtime.toolCallStreamer.flushSession(fileInfo.sessionId, "tool_file_boundary");
 
       const toolMessage = formatToolInfo(fileInfo);
-      const caption = prepareDocumentCaption(toolMessage || fileInfo.fileData.caption);
-
-      runtime.toolMessageBatcher.enqueueFile(fileInfo.sessionId, {
-        ...fileInfo.fileData,
-        caption,
-      });
+      for (const { fileData, line } of fileInfo.files) {
+        if (!fileData) {
+          continue;
+        }
+        runtime.toolMessageBatcher.enqueueFile(fileInfo.sessionId, {
+          ...fileData,
+          caption: prepareDocumentCaption(line || toolMessage || fileData.caption),
+        });
+      }
       await runtime.toolMessageBatcher.flushSession(fileInfo.sessionId, "tool_file_boundary");
     } catch (err) {
       logger.error("Failed to send file to Telegram:", err);

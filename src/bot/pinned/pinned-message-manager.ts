@@ -16,6 +16,7 @@ import {
   waitForModelContextLimit,
 } from "../../app/services/model-context-limit-service.js";
 import { getStoredModel } from "../../app/services/model-selection-service.js";
+import { getPatchFileChanges } from "../../app/formatters/summary-formatter.js";
 import { isExpectedOpencodeUnavailableError } from "../../utils/opencode-error.js";
 import { safeBackgroundTask } from "../../utils/safe-background-task.js";
 import type { FileChange, PinnedMessageState, TokensInfo } from "./pinned-message-types.js";
@@ -531,7 +532,24 @@ export class PinnedMessageManager {
             fileToolCount++;
           }
 
-          if (
+          const patchChanges =
+            toolPart.tool === "apply_patch" ? getPatchFileChanges(toolPart.state.metadata) : [];
+
+          if (patchChanges.length > 0) {
+            for (const change of patchChanges) {
+              const existing = filesMap.get(change.path);
+              if (existing) {
+                existing.additions += change.additions;
+                existing.deletions += change.deletions;
+              } else {
+                filesMap.set(change.path, {
+                  file: change.path,
+                  additions: change.additions,
+                  deletions: change.deletions,
+                });
+              }
+            }
+          } else if (
             (toolPart.tool === "edit" || toolPart.tool === "apply_patch") &&
             toolPart.state.metadata &&
             "filediff" in toolPart.state.metadata

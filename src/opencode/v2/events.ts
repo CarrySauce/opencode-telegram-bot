@@ -6,6 +6,7 @@ import {
   toV1Permission,
   toV1Question,
   toV1ToolInput,
+  toV1ToolMetadata,
   toV1ToolName,
 } from "./mappers.js";
 
@@ -553,7 +554,7 @@ export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) 
       case "session.tool.progress": {
         const data = event.data;
         const call = ensureToolCall(data.sessionID, data.assistantMessageID, data.id, created);
-        call.metadata = { ...call.metadata, ...data.metadata };
+        call.metadata = toV1ToolMetadata(call.tool, { ...call.metadata, ...data.metadata });
         const part = toolPart(data.id, {
           status: "running",
           input: call.input,
@@ -566,7 +567,10 @@ export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) 
       case "session.tool.success": {
         const data = event.data;
         const call = ensureToolCall(data.sessionID, data.assistantMessageID, data.id, created);
-        const metadata: Record<string, unknown> = { ...call.metadata, ...(data.metadata ?? {}) };
+        const metadata = toV1ToolMetadata(call.tool, {
+          ...call.metadata,
+          ...(data.metadata ?? {}),
+        });
         const output = toolContentText(data.content);
         tools.delete(data.id);
 
@@ -608,7 +612,7 @@ export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) 
           status: "error",
           input: call.input,
           error: data.error.message,
-          metadata: { ...call.metadata, ...(data.metadata ?? {}) },
+          metadata: toV1ToolMetadata(call.tool, { ...call.metadata, ...(data.metadata ?? {}) }),
           time: { start: call.start, end: created },
         });
         tools.delete(data.id);

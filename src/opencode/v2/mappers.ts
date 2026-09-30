@@ -35,6 +35,7 @@ import type {
   SessionStructuredError,
   SkillInfo,
 } from "@opencode/client";
+import { isRecord } from "../../utils/type-guards.js";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -73,6 +74,48 @@ export function toV1ToolInput(tool: string, input: JsonRecord): JsonRecord {
     }
   }
   return result;
+}
+
+/** Adds the V1 file-change field names the formatters read, keeping the V2 ones. */
+export function toV1ToolMetadata(tool: string, metadata: JsonRecord): JsonRecord {
+  if (!Array.isArray(metadata.files)) {
+    return metadata;
+  }
+  const files = metadata.files.filter(isRecord);
+
+  if (tool === "edit" && metadata.filediff === undefined) {
+    const file = files[0];
+    if (files.length !== 1 || !file || typeof file.file !== "string") {
+      return metadata;
+    }
+    const patch = typeof file.patch === "string" ? file.patch : undefined;
+    return {
+      ...metadata,
+      ...(patch !== undefined && typeof metadata.diff !== "string" ? { diff: patch } : {}),
+      filediff: {
+        file: file.file,
+        ...(patch !== undefined ? { patch } : {}),
+        additions: file.additions,
+        deletions: file.deletions,
+      },
+    };
+  }
+
+  if (tool === "apply_patch") {
+    return {
+      ...metadata,
+      files: files.map((file) => {
+        // V2 reports the path relative to the project, and the file's diff under `patch`,
+        // one of the two keys V1 entries use
+        if (typeof file.filePath === "string" || typeof file.file !== "string") {
+          return file;
+        }
+        return { ...file, filePath: file.file, relativePath: file.file };
+      }),
+    };
+  }
+
+  return metadata;
 }
 
 export function toolContentText(
@@ -174,8 +217,9 @@ function toV1ToolState(
     return { status: "pending", input: {}, raw: state.input };
   }
   const input = toV1ToolInput(toolName, state.input);
+  const metadata = state.metadata ? toV1ToolMetadata(toolName, state.metadata) : undefined;
   if (state.status === "running") {
-    return { status: "running", input, metadata: state.metadata, time: { start } };
+    return { status: "running", input, ...(metadata ? { metadata } : {}), time: { start } };
   }
   if (state.status === "completed") {
     return {
@@ -183,7 +227,7 @@ function toV1ToolState(
       input,
       output: toolContentText(state.content),
       title: "",
-      metadata: state.metadata ?? {},
+      metadata: metadata ?? {},
       time: { start, end },
     };
   }
@@ -191,7 +235,7 @@ function toV1ToolState(
     status: "error",
     input,
     error: state.error.message,
-    ...(state.metadata ? { metadata: state.metadata } : {}),
+    ...(metadata ? { metadata } : {}),
     time: { start, end },
   };
 }
