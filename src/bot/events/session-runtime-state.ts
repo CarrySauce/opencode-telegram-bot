@@ -523,6 +523,12 @@ export class SessionRuntimeState {
     return this.runningToolInfos.get(sessionKey(sessionId, callId));
   }
 
+  getRunningToolInfos(sessionId: string): ToolInfo[] {
+    return Array.from(this.runningToolInfos.values()).filter(
+      (info) => info.sessionId === sessionId,
+    );
+  }
+
   setRunningToolInfo(toolInfo: ToolInfo): void {
     this.runningToolInfos.set(sessionKey(toolInfo.sessionId, toolInfo.callId), toolInfo);
   }

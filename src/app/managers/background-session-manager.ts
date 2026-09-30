@@ -1,5 +1,6 @@
 import type { Event, Message, Session } from "@opencode-ai/sdk/v2";
 import { isScheduledTaskSessionIgnored } from "../services/scheduled-task-session-ignore-service.js";
+import { getCurrentSession } from "../stores/settings-store.js";
 import { logger } from "../../utils/logger.js";
 
 export type BackgroundSessionNotificationKind =
@@ -131,6 +132,9 @@ class BackgroundSessionTracker {
     }
 
     this.pendingAssistantResponsesBySessionId.delete(sessionId);
+    logger.info(
+      `[BackgroundSessionTracker] Assistant replied in a background session: session=${sessionId}, followed=${getCurrentSession()?.id ?? "none"}`,
+    );
     this.emitNotification({
       kind: "assistant_response",
       sessionId,

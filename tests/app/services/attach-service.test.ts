@@ -44,6 +44,9 @@ const mocked = vi.hoisted(() => ({
   showCurrentQuestionMock: vi.fn(),
   showPermissionRequestMock: vi.fn(),
   closeQuestionSettledOutsideMock: vi.fn(),
+  closeQuestionNotAnsweredMock: vi.fn(),
+  getTurnEndMarkMock: vi.fn(() => 7),
+  startMissedLiveTurnMock: vi.fn(),
   applyPermissionPromptChangesMock: vi.fn(),
   ensureEventSubscriptionMock: vi.fn(),
   stopEventListeningMock: vi.fn(),
@@ -83,6 +86,7 @@ vi.mock("../../../src/opencode/events.js", () => ({
 vi.mock("../../../src/bot/menus/question-menu.js", () => ({
   showCurrentQuestion: mocked.showCurrentQuestionMock,
   closeQuestionSettledOutside: mocked.closeQuestionSettledOutsideMock,
+  closeQuestionNotAnswered: mocked.closeQuestionNotAnsweredMock,
 }));
 
 vi.mock("../../../src/bot/menus/permission-menu.js", () => ({
@@ -97,6 +101,8 @@ function createDeps(): AppContainer {
       setSession: mocked.setSessionSummaryMock,
       setBotAndChatId: mocked.setBotAndChatIdMock,
       registerRestoredPermissionChild: mocked.registerRestoredPermissionChildMock,
+      getTurnEndMark: mocked.getTurnEndMarkMock,
+      startMissedLiveTurn: mocked.startMissedLiveTurnMock,
       clear: vi.fn(),
     } as unknown as AppContainer["summaryAggregator"],
     pinnedMessageManager: {
@@ -202,6 +208,9 @@ describe("attach/service", () => {
     mocked.showPermissionRequestMock.mockResolvedValue(undefined);
     mocked.closeQuestionSettledOutsideMock.mockReset();
     mocked.closeQuestionSettledOutsideMock.mockResolvedValue(undefined);
+    mocked.closeQuestionNotAnsweredMock.mockReset();
+    mocked.closeQuestionNotAnsweredMock.mockResolvedValue(undefined);
+    mocked.startMissedLiveTurnMock.mockReset();
     mocked.applyPermissionPromptChangesMock.mockReset();
     mocked.applyPermissionPromptChangesMock.mockResolvedValue(undefined);
     mocked.ensureEventSubscriptionMock.mockReset();
@@ -580,6 +589,97 @@ describe("attach/service", () => {
       expect(mocked.applyPermissionPromptChangesMock).not.toHaveBeenCalled();
       expect(container.permissionManager.isActiveMessage(501)).toBe(true);
     });
+
+    describe("after the server restarted", () => {
+      it("ends a permission prompt OpenCode no longer lists as not answered", async () => {
+        container.permissionManager.startPermission(permission, 501);
+
+        await restorePendingInteractionsAfterReconnect(
+          { ...deps, bot: createBot(), chatId: 777 },
+          true,
+        );
+
+        expect(mocked.applyPermissionPromptChangesMock).toHaveBeenCalledWith(
+          expect.anything(),
+          777,
+          [expect.objectContaining({ messageId: 501, outcome: { kind: "not_answered" } })],
+          expect.anything(),
+        );
+      });
+
+      it("closes a poll OpenCode no longer lists as not answered", async () => {
+        container.questionManager.startQuestions([], "question-1", "session-1");
+
+        await restorePendingInteractionsAfterReconnect(
+          { ...deps, bot: createBot(), chatId: 777 },
+          true,
+        );
+
+        expect(mocked.closeQuestionNotAnsweredMock).toHaveBeenCalledWith(
+          expect.anything(),
+          777,
+          expect.anything(),
+        );
+        expect(mocked.closeQuestionSettledOutsideMock).not.toHaveBeenCalled();
+      });
+
+      it("starts the resumed turn the stream missed when the session is busy", async () => {
+        mocked.sessionStatusMock.mockResolvedValue({
+          data: { "session-1": { type: "busy" } },
+          error: null,
+        });
+
+        await restorePendingInteractionsAfterReconnect(
+          { ...deps, bot: createBot(), chatId: 777 },
+          true,
+        );
+
+        expect(mocked.startMissedLiveTurnMock).toHaveBeenCalledWith("session-1", 7);
+      });
+
+      it("starts no turn for an idle session", async () => {
+        mocked.sessionStatusMock.mockResolvedValue({ data: {}, error: null });
+
+        await restorePendingInteractionsAfterReconnect(
+          { ...deps, bot: createBot(), chatId: 777 },
+          true,
+        );
+
+        expect(mocked.startMissedLiveTurnMock).not.toHaveBeenCalled();
+      });
+    });
+
+    it("reads no session status after a reconnect to the same server", async () => {
+      mocked.sessionStatusMock.mockClear();
+
+      await restorePendingInteractionsAfterReconnect({ ...deps, bot: createBot(), chatId: 777 });
+
+      expect(mocked.sessionStatusMock).not.toHaveBeenCalled();
+      expect(mocked.startMissedLiveTurnMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it("does not show again on attach a permission already settled", async () => {
+    const request = {
+      id: "permission-1",
+      sessionID: "session-1",
+      permission: "edit",
+      patterns: ["*"],
+      metadata: {},
+      always: [],
+    };
+    container.permissionManager.settleRequest("permission-1", "once");
+    mocked.permissionListMock.mockResolvedValue({ data: [request], error: null });
+
+    await attachToSession({
+      ...deps,
+      bot: createBot(),
+      chatId: 777,
+      session: { id: "session-1", title: "Session One", directory: "D:\\Projects\\Repo" },
+      ensureEventSubscription: mocked.ensureEventSubscriptionMock,
+    });
+
+    expect(mocked.showPermissionRequestMock).not.toHaveBeenCalled();
   });
 
   it("skips the reconnect restore when no session is followed", async () => {

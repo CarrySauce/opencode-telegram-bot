@@ -106,8 +106,23 @@ export async function showPermissionRequest(
   const { interactionManager, permissionManager, summaryAggregator } = deps;
   logger.debug(`[PermissionHandler] Showing permission request: ${request.permission}`);
 
+  // Restores and the event stream can show one request side by side: an equivalent prompt
+  // on its way is waited for, then this request joins it or, when it is the same, stops.
+  for (
+    let inFlight = permissionManager.getPresenting(request);
+    inFlight;
+    inFlight = permissionManager.getPresenting(request)
+  ) {
+    await inFlight;
+  }
+
   if (permissionManager.getDropReason(request, generation)) {
     logger.debug(`[PermissionHandler] Skipping stale or already resolved request: ${request.id}`);
+    return;
+  }
+
+  if (permissionManager.hasRequest(request.id)) {
+    logger.debug(`[PermissionHandler] Skipping request already on screen: ${request.id}`);
     return;
   }
 
@@ -138,6 +153,7 @@ export async function showPermissionRequest(
 
   const text = formatPermissionText(request);
   const keyboard = buildPermissionKeyboard();
+  const releasePresenting = permissionManager.claimPresenting(request);
 
   try {
     const message = await bot.sendMessage(chatId, text, {
@@ -167,6 +183,8 @@ export async function showPermissionRequest(
   } catch (err) {
     logger.error("[PermissionHandler] Failed to send permission message:", err);
     throw err;
+  } finally {
+    releasePresenting();
   }
 }
 

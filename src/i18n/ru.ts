@@ -420,6 +420,7 @@ export const ru: I18nDictionary = {
   "question.cancelled": "❌ Опрос отменен",
   "question.settled_outside.answered": "☑️ Ответ дан вне Telegram",
   "question.settled_outside.cancelled": "❌ Отменено вне Telegram",
+  "question.not_answered": "⏹ Без ответа",
   "question.answer_already_received": "Ответ уже получен, подождите...",
   "question.completed_no_answers": "✅ Опрос завершен (без ответов)",
   "question.no_active_project": "❌ Нет активного проекта",

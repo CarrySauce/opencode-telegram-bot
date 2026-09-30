@@ -68,6 +68,11 @@ export interface AppContainer {
   /** Stops following background operations; their lines and cards stay as they are. */
   stopBackgroundOperations(reason: string, sessionId?: string): void;
   /**
+   * On V2, ends the followed session's run in the chat as after `/abort` once its server
+   * is gone: the poll on screen closes as not answered, running lines end, no footer.
+   */
+  endRunLostWithServer(reason: string): Promise<void>;
+  /**
    * Stops ready-restore, the model catalog wait, event listening and the heartbeat,
    * and clears runtime state.
    */
@@ -138,6 +143,7 @@ export function createAppContainer(): AppContainer {
     resetRuntimeStreams: (reason) => eventSubscriptionService.clearRuntimeState(reason),
     stopBackgroundOperations: (reason, sessionId) =>
       eventSubscriptionService.stopBackgroundOperations(reason, sessionId),
+    endRunLostWithServer: (reason) => eventSubscriptionService.endRunLostWithServer(reason),
 
     cleanupProcess: (reason) => {
       stopReadyRestore();

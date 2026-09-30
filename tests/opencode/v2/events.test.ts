@@ -331,7 +331,59 @@ describe("opencode/v2/events", () => {
       }),
     );
 
-    expect(envelope?.payload).toMatchObject({ properties: { part: { tool: "unknown" } } });
+    expect(envelope).toBeUndefined();
+  });
+
+  it("drops every event of a call it never saw start instead of naming it", () => {
+    const translate = createV2EventTranslator();
+    const base = { sessionID: SESSION, assistantMessageID: MESSAGE, id: "call-lost" };
+
+    const result = payloads(translate, [
+      event("session.tool.called", { ...base, input: { command: "ls" }, executed: false }),
+      event("session.tool.progress", { ...base, metadata: { output: "x" } }),
+      event("session.tool.success", {
+        ...base,
+        content: [{ type: "text", text: "done" }],
+        executed: true,
+      }),
+      event("session.tool.failed", {
+        ...base,
+        error: { type: "unknown", message: "interrupted" },
+        executed: false,
+      }),
+    ]);
+
+    expect(result).toEqual([]);
+  });
+
+  it("forgets the calls it knew once the stream connects again", () => {
+    const translate = createV2EventTranslator();
+    const base = { sessionID: SESSION, assistantMessageID: MESSAGE, id: "call-1" };
+    translate(event("session.tool.input.started", { ...base, name: "shell" }));
+    translate(event("server.connected", {}));
+
+    const result = payloads(translate, [
+      event("session.tool.failed", {
+        ...base,
+        error: { type: "unknown", message: "interrupted" },
+        executed: false,
+      }),
+    ]);
+
+    expect(result).toEqual([]);
+  });
+
+  it("marks the connect event with whether the server restarted, when told", () => {
+    const translate = createV2EventTranslator();
+
+    expect(translate(event("server.connected", {}), true)[0]?.payload).toMatchObject({
+      type: "server.connected",
+      properties: { restarted: true },
+    });
+    expect(translate(event("server.connected", {}), false)[0]?.payload).toMatchObject({
+      properties: { restarted: false },
+    });
+    expect(translate(event("server.connected", {}))[0]?.payload.properties).toEqual({});
   });
 
   describe("background operations", () => {

@@ -27,6 +27,9 @@ function createEmptyState(): PermissionState {
 export class PermissionManager {
   private resolvedRequestIDs = new Set<string>();
   private resolvedGeneration = 0;
+  // Prompts on their way to Telegram, by signature: a second show of the same request
+  // waits for the first to land instead of sending its own prompt.
+  private presenting = new Map<string, Promise<void>>();
 
   constructor(private readonly interactionManager: InteractionManager) {}
 
@@ -67,6 +70,27 @@ export class PermissionManager {
     }
 
     return this.getResolvedRequestIDs().has(request.id) ? "resolved" : null;
+  }
+
+  /** The send of a prompt with this request's signature, while one is on its way. */
+  getPresenting(request: PermissionRequest): Promise<void> | undefined {
+    return this.presenting.get(this.getRequestSignature(request));
+  }
+
+  /** Marks a prompt with this request's signature as on its way; the returned call ends that. */
+  claimPresenting(request: PermissionRequest): () => void {
+    const signature = this.getRequestSignature(request);
+    let release = () => {};
+    const landed = new Promise<void>((resolve) => {
+      release = () => {
+        if (this.presenting.get(signature) === landed) {
+          this.presenting.delete(signature);
+        }
+        resolve();
+      };
+    });
+    this.presenting.set(signature, landed);
+    return release;
   }
 
   /**
@@ -314,9 +338,14 @@ export class PermissionManager {
 
   /**
    * An OpenCode request was settled: it leaves its prompt, and the prompt ends once its
-   * last request is settled. `reply` is the decision OpenCode reported, when it did.
+   * last request is settled. `reply` is the decision OpenCode reported, when it did;
+   * `lost` says the request went with a server that stopped, so nobody answered it.
    */
-  settleRequest(requestID: string, reply: PermissionReply | null): PermissionPromptChange[] {
+  settleRequest(
+    requestID: string,
+    reply: PermissionReply | null,
+    lost = false,
+  ): PermissionPromptChange[] {
     this.getResolvedRequestIDs().add(requestID);
     this.interactionManager.dropWaitingPermission(requestID);
 
@@ -342,7 +371,7 @@ export class PermissionManager {
         continue;
       }
 
-      const outcome = this.getSettledOutcome(state, messageId, request, requestID, reply);
+      const outcome = this.getSettledOutcome(state, messageId, request, requestID, reply, lost);
       this.removePrompt(state, messageId, request);
       changes.push({ messageId, request, openCount: 0, outcome });
     }
@@ -414,6 +443,7 @@ export class PermissionManager {
     request: PermissionRequest,
     requestID: string,
     reply: PermissionReply | null,
+    lost: boolean,
   ): PermissionOutcome {
     const send = state.sendsByMessageId.get(messageId);
     if (send?.requestIds.includes(requestID)) {
@@ -425,6 +455,10 @@ export class PermissionManager {
       if (sending.settlesSession && sendingRequest?.sessionID === request.sessionID) {
         return { kind: "replied", reply: "reject", outside: false };
       }
+    }
+
+    if (lost) {
+      return { kind: "not_answered" };
     }
 
     return reply ? { kind: "replied", reply, outside: true } : { kind: "settled_outside" };

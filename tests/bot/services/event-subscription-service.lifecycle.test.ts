@@ -643,10 +643,12 @@ describe("bot/services/event-subscription-service lifecycle", () => {
 
     it("forgets the running turn when the event stream reconnects", async () => {
       const { summaryAggregator } = await setup();
-      const onReconnect = mocked.subscribeToEvents.mock.calls.at(-1)?.[2] as () => void;
+      const onReconnect = mocked.subscribeToEvents.mock.calls.at(-1)?.[2] as (info: {
+        serverRestarted: boolean | null;
+      }) => void;
 
       emitSessionBusy(summaryAggregator);
-      onReconnect();
+      onReconnect({ serverRestarted: null });
 
       expect(activeContainer.summaryAggregator.getLiveTurnStartedAt("session-1")).toBeNull();
     }, 30_000);

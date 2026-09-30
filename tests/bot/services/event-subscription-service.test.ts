@@ -1591,9 +1591,11 @@ describe("bot/services/event-subscription-service", () => {
     it("stops background operations when the event stream reconnects", async () => {
       const { api, summaryAggregator } = await setupService(false, { startAssistantRun: true });
       await launchAndEndTurn(api, summaryAggregator);
-      const onReconnect = mocked.subscribeToEvents.mock.calls[0]?.[2] as () => void;
+      const onReconnect = mocked.subscribeToEvents.mock.calls[0]?.[2] as (info: {
+        serverRestarted: boolean | null;
+      }) => void;
 
-      onReconnect();
+      onReconnect({ serverRestarted: null });
       const textsBefore = collectSentTexts(api).length;
       await vi.advanceTimersByTimeAsync(60_000);
 

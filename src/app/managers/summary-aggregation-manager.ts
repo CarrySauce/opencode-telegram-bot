@@ -186,7 +186,7 @@ export interface SessionIdleInfo {
   interrupted: boolean;
 }
 
-type SessionIdleCallback = (sessionId: string, idleInfo: SessionIdleInfo) => void;
+type SessionIdleCallback = (sessionId: string, idleInfo: SessionIdleInfo) => void | Promise<void>;
 
 type PermissionCallback = (request: PermissionRequest) => void | Promise<void>;
 
@@ -377,6 +377,8 @@ export class SummaryAggregator {
   private lastSubagentSnapshot = "";
   // When the current session's running turn began, whoever started it; null between turns.
   private liveTurnStartedAt: number | null = null;
+  /** Counts ends of the current session's turns, so a late status answer can tell one passed. */
+  private turnEndCount = 0;
 
   setBotAndChatId(bot: Bot, chatId: number): void {
     this.bot = bot;
@@ -487,6 +489,23 @@ export class SummaryAggregator {
   /** Forgets the running turn: after a gap in the event stream its end may have been missed. */
   forgetLiveTurn(): void {
     this.liveTurnStartedAt = null;
+  }
+
+  /** A mark to pass to `startMissedLiveTurn`, taken before the session status is read. */
+  getTurnEndMark(): number {
+    return this.turnEndCount;
+  }
+
+  /**
+   * Starts the current session's turn from now when a busy status the stream missed says it
+   * runs, unless a turn already runs or one ended since the mark was taken.
+   */
+  startMissedLiveTurn(sessionId: string, mark: number): void {
+    if (sessionId !== this.currentSessionId || mark !== this.turnEndCount) {
+      return;
+    }
+
+    this.liveTurnStartedAt ??= Date.now();
   }
 
   holdOutbound(): void {
@@ -689,6 +708,7 @@ export class SummaryAggregator {
     this.subagentRunStartedAt = 0;
     this.lastSubagentSnapshot = "";
     this.liveTurnStartedAt = null;
+    this.turnEndCount++;
     this.permissionQueue = Promise.resolve();
     this.messageCount = 0;
 
@@ -2334,6 +2354,7 @@ export class SummaryAggregator {
     logger.info(`[Aggregator] Session became idle: ${sessionID}`);
     this.emitSessionRunEnded(sessionID);
     this.liveTurnStartedAt = null;
+    this.turnEndCount++;
     this.acceptsSubagentEvents = false;
     this.retireForegroundSubagents();
 
@@ -2343,9 +2364,8 @@ export class SummaryAggregator {
     if (this.onSessionIdleCallback) {
       const callback = this.onSessionIdleCallback;
       const idleInfo: SessionIdleInfo = { interrupted: isInterruptedIdle(event.properties) };
-      this.scheduleOutbound(() => {
-        callback(sessionID, idleInfo);
-      }, true);
+      // Returned, so a drain of held work waits for the run to be closed in the chat.
+      this.scheduleOutbound(() => callback(sessionID, idleInfo), true);
     }
   }
 
@@ -2401,6 +2421,7 @@ export class SummaryAggregator {
     logger.warn(`[Aggregator] Session error: ${sessionID}: ${message}`);
     this.emitSessionRunEnded(sessionID);
     this.liveTurnStartedAt = null;
+    this.turnEndCount++;
     this.acceptsSubagentEvents = false;
     this.retireForegroundSubagents();
     this.stopTypingIndicator();

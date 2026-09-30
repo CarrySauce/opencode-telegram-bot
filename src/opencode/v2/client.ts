@@ -78,6 +78,7 @@ const MESSAGE_PAGE_SIZE = 200;
 const MAX_MESSAGE_PAGES = 50;
 const COMPLETION_POLL_INTERVAL_MS = 250;
 const COMPLETION_POLL_ATTEMPTS = 40;
+const SERVER_IDENTITY_TIMEOUT_MS = 2_000;
 
 function isNotFound(error: Error): boolean {
   // Declared answers are named after their tag (SessionNotFoundError, ...); an undeclared
@@ -146,6 +147,36 @@ export function createV2OpencodeClient(options: V2ClientOptions): OpencodeClient
   const rememberForm = (form: FormInfo) => {
     forms.set(form.id, form);
   };
+
+  // The process behind the last stream connection: a different one on the next connection
+  // means the server restarted in between.
+  let lastServerPid: number | null = null;
+
+  /** Whether the server restarted since the previous connection; undefined when unknown. */
+  async function readServerRestart(): Promise<boolean | undefined> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const info = await Promise.race([
+        client.server.info(),
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), SERVER_IDENTITY_TIMEOUT_MS);
+        }),
+      ]);
+      if (!info) {
+        // The server behind this connection is unknown: the next answer cannot be compared.
+        lastServerPid = null;
+        return undefined;
+      }
+      const previousPid = lastServerPid;
+      lastServerPid = info.pid;
+      return previousPid === null ? undefined : previousPid !== info.pid;
+    } catch {
+      lastServerPid = null;
+      return undefined;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   async function applySelection(
     sessionID: string,
@@ -313,7 +344,10 @@ export function createV2OpencodeClient(options: V2ClientOptions): OpencodeClient
           ...(signal ? { signal } : {}),
           onActivity,
         })) {
-          for (const translated of translate(event)) {
+          // Read before the connect is handed on, so it is known ahead of the events after it.
+          const restarted =
+            event.type === "server.connected" ? await readServerRestart() : undefined;
+          for (const translated of translate(event, restarted)) {
             if (translated.payload.type === "permission.asked") {
               permissionSessions.set(
                 translated.payload.properties.id,

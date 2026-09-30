@@ -11,8 +11,16 @@ export interface EventEnvelope {
 }
 
 export type EventCallback = (envelope: EventEnvelope) => void;
+/**
+ * What a reconnect tells about the server: `serverRestarted` is true when it is another
+ * process than before, false when it is the same one, null when that cannot be told (V1,
+ * or no answer).
+ */
+export interface ReconnectInfo {
+  serverRestarted: boolean | null;
+}
 /** Runs once the stream delivers again after it dropped, since missed events are not replayed. */
-export type ReconnectCallback = () => void;
+export type ReconnectCallback = (info: ReconnectInfo) => void;
 type EventStreamSource = "global" | "legacy";
 type EventStreamSubscription = {
   source: EventStreamSource;
@@ -187,6 +195,15 @@ function normalizeEvent(
   return { directory, event: rawEvent };
 }
 
+/** The V2 adapter marks the connect event with whether the server restarted. */
+function getReconnectInfo(event: Event): ReconnectInfo {
+  if (event.type !== "server.connected") {
+    return { serverRestarted: null };
+  }
+  const restarted = (event.properties as { restarted?: unknown }).restarted;
+  return { serverRestarted: typeof restarted === "boolean" ? restarted : null };
+}
+
 async function subscribeToGlobalEventStream(signal: AbortSignal): Promise<EventStreamSubscription> {
   const globalEvents = (opencodeClient as OptionalGlobalEventClient).global;
   if (!globalEvents?.event) {
@@ -334,6 +351,7 @@ export async function subscribeToEvents(
             if (streamDropped) {
               streamDropped = false;
               const reconnectSnapshot = reconnectCallback;
+              const reconnectInfo = getReconnectInfo(normalizedEvent.event);
               if (reconnectSnapshot) {
                 setImmediate(() => {
                   if (streamAbortController !== controller || listenerGeneration !== generation) {
@@ -341,7 +359,7 @@ export async function subscribeToEvents(
                   }
 
                   try {
-                    reconnectSnapshot();
+                    reconnectSnapshot(reconnectInfo);
                   } catch (error) {
                     logger.error("[Events] Reconnect callback failed:", error);
                   }

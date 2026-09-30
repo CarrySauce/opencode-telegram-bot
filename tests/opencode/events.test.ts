@@ -413,6 +413,35 @@ describe("opencode/events", () => {
       expect(onReconnect).toHaveBeenCalledTimes(1);
     });
     expect(subscribeMock).toHaveBeenCalledTimes(1);
+    expect(onReconnect).toHaveBeenCalledWith({ serverRestarted: null });
+
+    stopEventListening();
+    await subscription;
+  });
+
+  it("hands the connect event's restart mark to the reconnect callback", async () => {
+    subscribeMock
+      .mockResolvedValueOnce({
+        stream: createStream([{ type: "server.connected", properties: {} }]),
+      })
+      .mockImplementationOnce(async (_params, options: { signal: AbortSignal }) => {
+        return {
+          stream: createOpenStream(
+            [{ type: "server.connected", properties: { restarted: true } }],
+            options.signal,
+          ),
+        };
+      });
+    const onReconnect = vi.fn();
+
+    const subscription = subscribeToEvents("D:/repo", vi.fn(), onReconnect);
+
+    await vi.waitFor(
+      () => {
+        expect(onReconnect).toHaveBeenCalledWith({ serverRestarted: true });
+      },
+      { timeout: 3000 },
+    );
 
     stopEventListening();
     await subscription;

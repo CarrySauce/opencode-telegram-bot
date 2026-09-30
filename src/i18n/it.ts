@@ -432,6 +432,7 @@ export const it: I18nDictionary = {
   "question.cancelled": "❌ Sondaggio annullato",
   "question.settled_outside.answered": "☑️ Answered outside Telegram",
   "question.settled_outside.cancelled": "❌ Cancelled outside Telegram",
+  "question.not_answered": "⏹ Not answered",
   "question.answer_already_received": "Risposta già ricevuta, attendi...",
   "question.completed_no_answers": "✅ Sondaggio completato (nessuna risposta)",
   "question.no_active_project": "❌ Nessun progetto attivo",

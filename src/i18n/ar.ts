@@ -407,6 +407,7 @@ export const ar: I18nDictionary = {
   "question.cancelled": "❌ تم إلغاء الاستبيان",
   "question.settled_outside.answered": "☑️ Answered outside Telegram",
   "question.settled_outside.cancelled": "❌ Cancelled outside Telegram",
+  "question.not_answered": "⏹ Not answered",
   "question.answer_already_received": "تم استلام الإجابة بالفعل، يرجى الانتظار...",
   "question.completed_no_answers": "✅ اكتمل الاستبيان (بدون إجابات)",
   "question.no_active_project": "❌ لا يوجد مشروع نشط",

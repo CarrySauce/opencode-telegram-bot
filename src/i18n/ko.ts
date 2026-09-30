@@ -426,6 +426,7 @@ export const ko: I18nDictionary = {
   "question.cancelled": "❌ 설문이 취소되었습니다",
   "question.settled_outside.answered": "☑️ Answered outside Telegram",
   "question.settled_outside.cancelled": "❌ Cancelled outside Telegram",
+  "question.not_answered": "⏹ Not answered",
   "question.answer_already_received": "답변이 이미 접수되었습니다. 잠시만 기다려 주세요...",
   "question.completed_no_answers": "✅ 설문 완료 (답변 없음)",
   "question.no_active_project": "❌ 활성 프로젝트가 없습니다",

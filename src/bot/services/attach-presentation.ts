@@ -6,6 +6,7 @@ import {
   type PermissionMenuDeps,
 } from "../menus/permission-menu.js";
 import {
+  closeQuestionNotAnswered,
   closeQuestionSettledOutside,
   showCurrentQuestion,
   type QuestionMenuDeps,
@@ -63,5 +64,6 @@ export function createAttachPresentation(
       applyPermissionPromptChanges(api, chatId, changes, deps),
     closeQuestionSettledOutside: (api, chatId) =>
       closeQuestionSettledOutside(api, chatId, "answered", deps),
+    closeQuestionNotAnswered: (api, chatId) => closeQuestionNotAnswered(api, chatId, deps),
   };
 }

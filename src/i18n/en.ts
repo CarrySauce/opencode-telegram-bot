@@ -417,6 +417,7 @@ export const en = {
   "question.cancelled": "❌ Poll cancelled",
   "question.settled_outside.answered": "☑️ Answered outside Telegram",
   "question.settled_outside.cancelled": "❌ Cancelled outside Telegram",
+  "question.not_answered": "⏹ Not answered",
   "question.answer_already_received": "Answer already received, please wait...",
   "question.completed_no_answers": "✅ Poll completed (no answers)",
   "question.no_active_project": "❌ No active project",

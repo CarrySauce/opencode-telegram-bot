@@ -416,6 +416,7 @@ export const id: I18nDictionary = {
   "question.cancelled": "❌ Pertanyaan dibatalkan",
   "question.settled_outside.answered": "☑️ Answered outside Telegram",
   "question.settled_outside.cancelled": "❌ Cancelled outside Telegram",
+  "question.not_answered": "⏹ Not answered",
   "question.answer_already_received": "Jawaban sudah diterima, tunggu sebentar...",
   "question.completed_no_answers": "✅ Pertanyaan selesai (tanpa jawaban)",
   "question.no_active_project": "❌ Tidak ada proyek aktif",

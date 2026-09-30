@@ -385,6 +385,7 @@ export const zh: I18nDictionary = {
   "question.cancelled": "❌ 投票已取消",
   "question.settled_outside.answered": "☑️ Answered outside Telegram",
   "question.settled_outside.cancelled": "❌ Cancelled outside Telegram",
+  "question.not_answered": "⏹ Not answered",
   "question.answer_already_received": "已收到答案，请稍候...",
   "question.completed_no_answers": "✅ 投票完成（无答案）",
   "question.no_active_project": "❌ 没有活动项目",

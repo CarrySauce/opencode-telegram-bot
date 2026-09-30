@@ -400,4 +400,65 @@ describe("opencode/v2/client", () => {
     expect(globalEvents[1]?.directory).toBe("D:/repo");
     expect(projectEvents).toEqual(["server.connected", "session.status"]);
   });
+
+  describe("server restart mark", () => {
+    type ConnectClient = {
+      global: {
+        event: () => Promise<{
+          stream: AsyncIterable<{ payload: { type: string; properties: object } }>;
+        }>;
+      };
+    };
+
+    async function connect(client: ConnectClient): Promise<object | undefined> {
+      for await (const envelope of (await client.global.event()).stream) {
+        if (envelope.payload.type === "server.connected") {
+          return envelope.payload.properties;
+        }
+      }
+      return undefined;
+    }
+
+    beforeEach(() => {
+      fake.client.event.subscribe.mockImplementation(() =>
+        (async function* () {
+          yield { id: "evt-1", type: "server.connected", data: {} };
+        })(),
+      );
+    });
+
+    it("leaves the first connection unmarked, then marks the same and another server", async () => {
+      const client = createClient() as unknown as ConnectClient;
+      fake.client.server.info.mockResolvedValue({ version: "2.0.18", pid: 100 });
+
+      expect(await connect(client)).toEqual({});
+      expect(await connect(client)).toEqual({ restarted: false });
+
+      fake.client.server.info.mockResolvedValue({ version: "2.0.18", pid: 200 });
+      expect(await connect(client)).toEqual({ restarted: true });
+    });
+
+    it("leaves the connection unmarked when the server does not tell who it is", async () => {
+      const client = createClient() as unknown as ConnectClient;
+      fake.client.server.info.mockResolvedValue({ version: "2.0.18", pid: 100 });
+      await connect(client);
+
+      fake.client.server.info.mockRejectedValue(new Error("down"));
+
+      expect(await connect(client)).toEqual({});
+    });
+
+    it("compares nothing against a server it could not identify", async () => {
+      const client = createClient() as unknown as ConnectClient;
+      fake.client.server.info.mockResolvedValue({ version: "2.0.18", pid: 100 });
+      await connect(client);
+      fake.client.server.info.mockRejectedValueOnce(new Error("down"));
+      await connect(client);
+
+      fake.client.server.info.mockResolvedValue({ version: "2.0.18", pid: 200 });
+
+      expect(await connect(client)).toEqual({});
+      expect(await connect(client)).toEqual({ restarted: false });
+    });
+  });
 });

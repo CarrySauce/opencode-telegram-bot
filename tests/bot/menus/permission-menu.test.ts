@@ -204,4 +204,45 @@ describe("bot/menus/permission-menu", () => {
 
     expect(sendMessage).not.toHaveBeenCalled();
   });
+
+  it("sends one prompt when the same request is shown twice at once", async () => {
+    const { api, sendMessage } = createApi(() => {});
+
+    await Promise.all([
+      showPermissionRequest(api, 42, PERMISSION, deps),
+      showPermissionRequest(api, 42, PERMISSION, deps),
+      showPermissionRequest(api, 42, PERMISSION, deps),
+    ]);
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(deps.permissionManager.getMessageIds()).toEqual([201]);
+    expect(deps.permissionManager.getRequestIDs(201)).toEqual(["perm-1"]);
+  });
+
+  it("groups an equivalent request shown while the first prompt is being sent", async () => {
+    const { api, sendMessage } = createApi(() => {});
+    vi.mocked(api.editMessageText).mockResolvedValue(true);
+
+    await Promise.all([
+      showPermissionRequest(api, 42, PERMISSION, deps),
+      showPermissionRequest(api, 42, { ...PERMISSION, id: "perm-2" }, deps),
+    ]);
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(deps.permissionManager.getRequestIDs(201)).toEqual(["perm-1", "perm-2"]);
+  });
+
+  it("lets a waiting show go on when the first send fails", async () => {
+    const { api, sendMessage } = createApi(() => {});
+    sendMessage.mockRejectedValueOnce(new Error("telegram down"));
+
+    const results = await Promise.allSettled([
+      showPermissionRequest(api, 42, PERMISSION, deps),
+      showPermissionRequest(api, 42, PERMISSION, deps),
+    ]);
+
+    expect(results.map((result) => result.status)).toEqual(["rejected", "fulfilled"]);
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(deps.permissionManager.getMessageIds()).toEqual([201]);
+  });
 });

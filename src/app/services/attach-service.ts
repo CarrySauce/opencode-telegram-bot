@@ -36,6 +36,7 @@ export interface AttachPresentationDeps {
     changes: PermissionPromptChange[],
   ): Promise<void>;
   closeQuestionSettledOutside(api: Bot<Context>["api"], chatId: number): Promise<void>;
+  closeQuestionNotAnswered(api: Bot<Context>["api"], chatId: number): Promise<void>;
 }
 
 type PendingQuestion = NonNullable<
@@ -244,16 +245,18 @@ function snapshotTrackedRequests(deps: RestoreAfterReconnectDeps): TrackedReques
 
 /**
  * After a reconnect, prompts on screen that OpenCode no longer has pending were settled
- * while the stream was down: they end as answered outside Telegram, and waiting requests
- * that are gone leave the queue. Only requests tracked before the lists were requested
- * are checked — one that arrived meanwhile is missing from the lists without being
- * settled. Answers or a dismissal being sent from Telegram are left to that send.
+ * while the stream was down: they end as answered outside Telegram — or as not answered
+ * when the server restarted, since they went with it — and waiting requests that are gone
+ * leave the queue. Only requests tracked before the lists were requested are checked — one
+ * that arrived meanwhile is missing from the lists without being settled. Answers or a
+ * dismissal being sent from Telegram are left to that send.
  */
 async function settleRequestsGoneWhileDisconnected(
   deps: RestoreAfterReconnectDeps,
   tracked: TrackedRequestsSnapshot,
   questions: PendingQuestion[] | null,
   permissions: PendingPermission[] | null,
+  serverRestarted: boolean,
 ): Promise<void> {
   if (questions) {
     const pendingIds = new Set(questions.map((request) => request.id));
@@ -269,7 +272,11 @@ async function settleRequestsGoneWhileDisconnected(
       !deps.questionManager.isSettlingFromTelegram() &&
       attachPresentation
     ) {
-      await attachPresentation.closeQuestionSettledOutside(deps.bot.api, deps.chatId);
+      if (serverRestarted) {
+        await attachPresentation.closeQuestionNotAnswered(deps.bot.api, deps.chatId);
+      } else {
+        await attachPresentation.closeQuestionSettledOutside(deps.bot.api, deps.chatId);
+      }
     }
   }
 
@@ -282,11 +289,30 @@ async function settleRequestsGoneWhileDisconnected(
     const settleable = new Set(deps.permissionManager.getSettleableRequestIds());
     const changes = tracked.shownPermissionIds
       .filter((requestID) => !pendingIds.has(requestID) && settleable.has(requestID))
-      .flatMap((requestID) => deps.permissionManager.settleRequest(requestID, null));
+      .flatMap((requestID) =>
+        deps.permissionManager.settleRequest(requestID, null, serverRestarted),
+      );
     if (changes.length > 0 && attachPresentation) {
       await attachPresentation.applyPermissionPromptChanges(deps.bot.api, deps.chatId, changes);
     }
   }
+}
+
+/** A poll already on screen or waiting, so a restore must not show it again. */
+function isQuestionTracked(deps: AttachRestoreDeps, requestID: string): boolean {
+  return (
+    deps.questionManager.getRequestID() === requestID ||
+    deps.interactionManager.isWaitingOrReleasing(requestID)
+  );
+}
+
+/** A permission already on screen, settled or waiting, so a restore must not show it again. */
+function isPermissionTracked(deps: AttachRestoreDeps, request: PermissionRequest): boolean {
+  return (
+    deps.permissionManager.hasRequest(request.id) ||
+    deps.permissionManager.isResolved(request.id) ||
+    deps.interactionManager.isWaitingOrReleasing(request.id)
+  );
 }
 
 export async function attachToSession(deps: AttachSessionDeps): Promise<AttachSessionResult> {
@@ -349,6 +375,7 @@ export async function attachToSession(deps: AttachSessionDeps): Promise<AttachSe
           session.id,
           session.directory,
           pendingQuestions,
+          (requestID) => isQuestionTracked(deps, requestID),
         )
       : false;
 
@@ -361,6 +388,7 @@ export async function attachToSession(deps: AttachSessionDeps): Promise<AttachSe
           session.id,
           session.directory,
           pendingPermissions,
+          (request) => isPermissionTracked(deps, request),
         )
       : 0;
   }
@@ -444,13 +472,37 @@ async function dropSavedSessionIfMissing(
 }
 
 /**
+ * After a restart V2 resumes the interrupted run before the stream is back, so the resumed
+ * turn's busy status was never seen: a busy session starts its turn from now, unless a turn
+ * ended since `mark` was taken.
+ */
+async function startMissedLiveTurn(
+  deps: RestoreAfterReconnectDeps,
+  sessionId: string,
+  directory: string,
+  mark: number,
+): Promise<void> {
+  const { data: statuses, error } = await opencodeClient.session.status({ directory });
+  if (error) {
+    logger.warn("[Attach] Failed to load session status after a server restart:", error);
+    return;
+  }
+
+  if (getAttachBusyStatus(sessionId, statuses)) {
+    deps.summaryAggregator.startMissedLiveTurn(sessionId, mark);
+  }
+}
+
+/**
  * The event stream does not replay what was missed while it was down, so after a reconnect
  * the prompts on screen are checked against what OpenCode still has pending, and the
  * followed session's pending questions and permissions are loaded again. Anything still
- * on screen or waiting is left alone.
+ * on screen or waiting is left alone. `serverRestarted` says the reconnect reached another
+ * server process than before.
  */
 export async function restorePendingInteractionsAfterReconnect(
   deps: RestoreAfterReconnectDeps,
+  serverRestarted = false,
 ): Promise<void> {
   const attached = deps.attachManager.getSnapshot();
   if (!attached) {
@@ -461,9 +513,23 @@ export async function restorePendingInteractionsAfterReconnect(
   const [pendingQuestions, pendingPermissions] = await Promise.all([
     listPendingQuestions(attached.directory),
     listPendingPermissions(attached.directory),
+    serverRestarted
+      ? startMissedLiveTurn(
+          deps,
+          attached.sessionId,
+          attached.directory,
+          deps.summaryAggregator.getTurnEndMark(),
+        )
+      : undefined,
   ]);
 
-  await settleRequestsGoneWhileDisconnected(deps, tracked, pendingQuestions, pendingPermissions);
+  await settleRequestsGoneWhileDisconnected(
+    deps,
+    tracked,
+    pendingQuestions,
+    pendingPermissions,
+    serverRestarted,
+  );
 
   const restoredQuestion = pendingQuestions
     ? await restorePendingQuestions(
@@ -473,9 +539,7 @@ export async function restorePendingInteractionsAfterReconnect(
         attached.sessionId,
         attached.directory,
         pendingQuestions,
-        (requestID) =>
-          deps.questionManager.getRequestID() === requestID ||
-          deps.interactionManager.isWaitingOrReleasing(requestID),
+        (requestID) => isQuestionTracked(deps, requestID),
       )
     : false;
 
@@ -487,10 +551,7 @@ export async function restorePendingInteractionsAfterReconnect(
         attached.sessionId,
         attached.directory,
         pendingPermissions,
-        (request) =>
-          deps.permissionManager.hasRequest(request.id) ||
-          deps.permissionManager.isResolved(request.id) ||
-          deps.interactionManager.isWaitingOrReleasing(request.id),
+        (request) => isPermissionTracked(deps, request),
       )
     : 0;
 

@@ -417,6 +417,7 @@ export const tr: I18nDictionary = {
   "question.cancelled": "❌ Anket iptal edildi",
   "question.settled_outside.answered": "☑️ Answered outside Telegram",
   "question.settled_outside.cancelled": "❌ Cancelled outside Telegram",
+  "question.not_answered": "⏹ Not answered",
   "question.answer_already_received": "Yanıt zaten alındı, lütfen bekleyin...",
   "question.completed_no_answers": "✅ Anket tamamlandı (yanıt yok)",
   "question.no_active_project": "❌ Etkin proje yok",

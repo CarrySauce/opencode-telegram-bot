@@ -18,6 +18,7 @@ import { clearPromptResponseMode } from "../handlers/prompt.js";
 export type OpencodeStopCommandDeps = Pick<
   AppContainer,
   | "attachManager"
+  | "endRunLostWithServer"
   | "foregroundSessionState"
   | "opencodeReadyLifecycle"
   | "resetInteractions"
@@ -38,6 +39,8 @@ async function releaseLocalStateAfterServerStop(deps: OpencodeStopCommandDeps): 
     sessionIds.add(attached.sessionId);
   }
 
+  // The stopped server never ends its run: the chat ends it as after /abort (V2 only).
+  await deps.endRunLostWithServer(STOP_REASON);
   deps.resetRuntimeStreams(STOP_REASON);
   deps.foregroundSessionState.clearAll(STOP_REASON);
 

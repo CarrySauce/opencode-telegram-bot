@@ -196,6 +196,26 @@ describe("bot/commands/opencode-stop-command", () => {
     expect(order).toEqual(["withdraw", "kill"]);
   });
 
+  it("ends the lost run in the chat after the kill and before the local reset", async () => {
+    const ctx = createContext();
+    const order: string[] = [];
+    mocked.findServerPidMock.mockResolvedValue(456);
+    mocked.killServerProcessMock.mockImplementation(async () => {
+      order.push("kill");
+      return true;
+    });
+    mocked.clearRuntimeStateMock.mockImplementation(() => {
+      order.push("reset");
+    });
+    const endRunLostWithServer = vi.fn(async (reason: string) => {
+      order.push(`end:${reason}`);
+    });
+
+    await opencodeStopCommand(ctx as never, { ...createDeps(), endRunLostWithServer });
+
+    expect(order).toEqual(["kill", "end:opencode_stop", "reset"]);
+  });
+
   it("clears busy sessions and attached state after a successful stop", async () => {
     const ctx = createContext();
     mocked.findServerPidMock.mockResolvedValue(456);

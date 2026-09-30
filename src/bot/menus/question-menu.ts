@@ -231,28 +231,63 @@ export async function closeQuestionSettledOutside(
   outcome: QuestionSettledOutcome,
   deps: QuestionStateDeps,
 ): Promise<void> {
+  logger.info(
+    `[QuestionHandler] Poll settled outside Telegram: requestID=${deps.questionManager.getRequestID()}, outcome=${outcome}`,
+  );
+  await closeQuestionWithLine(
+    bot,
+    chatId,
+    t(
+      outcome === "answered"
+        ? "question.settled_outside.answered"
+        : "question.settled_outside.cancelled",
+    ),
+    "question_settled_outside",
+    deps,
+  );
+}
+
+/**
+ * Closes the poll on screen that OpenCode lost with its server (stopped or restarted): it
+ * keeps its text, loses its buttons and says it was not answered.
+ */
+export async function closeQuestionNotAnswered(
+  bot: Context["api"],
+  chatId: number,
+  deps: QuestionStateDeps,
+): Promise<void> {
+  logger.info(
+    `[QuestionHandler] Poll lost with the OpenCode server: requestID=${deps.questionManager.getRequestID()}`,
+  );
+  await closeQuestionWithLine(
+    bot,
+    chatId,
+    t("question.not_answered"),
+    "question_not_answered",
+    deps,
+  );
+}
+
+async function closeQuestionWithLine(
+  bot: Context["api"],
+  chatId: number,
+  line: string,
+  reason: "question_settled_outside" | "question_not_answered",
+  deps: QuestionStateDeps,
+): Promise<void> {
   const { questionManager } = deps;
   const question = questionManager.getCurrentQuestion();
   const messageId = questionManager.getActiveMessageId();
-  const line = t(
-    outcome === "answered"
-      ? "question.settled_outside.answered"
-      : "question.settled_outside.cancelled",
-  );
   const part = question ? formatQuestionDetailsPart(question, deps, line) : null;
-
-  logger.info(
-    `[QuestionHandler] Poll settled outside Telegram: requestID=${questionManager.getRequestID()}, outcome=${outcome}`,
-  );
 
   // Release the poll before the edit: the question tool's error, which follows a dismissal,
   // must not find it active and delete it.
-  clearQuestionInteraction("question_settled_outside", deps);
+  clearQuestionInteraction(reason, deps);
   questionManager.clear();
 
   if (part && messageId !== null) {
     await editRenderedBotPart({ api: bot, chatId, messageId, part }).catch((err) => {
-      logger.warn("[QuestionHandler] Failed to close the settled poll message:", err);
+      logger.warn("[QuestionHandler] Failed to close the poll message:", err);
     });
   }
 }

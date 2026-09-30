@@ -1954,6 +1954,28 @@ describe("summary/aggregator", () => {
       expect(summaryAggregator.getLiveTurnStartedAt("session-1")).toBe(5_000);
     });
 
+    it("starts a turn the stream missed unless one runs or one ended since the mark", () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(1_000);
+      summaryAggregator.setSession("session-1");
+
+      const mark = summaryAggregator.getTurnEndMark();
+      summaryAggregator.startMissedLiveTurn("session-2", mark);
+      expect(summaryAggregator.getLiveTurnStartedAt("session-1")).toBeNull();
+
+      summaryAggregator.startMissedLiveTurn("session-1", mark);
+      expect(summaryAggregator.getLiveTurnStartedAt("session-1")).toBe(1_000);
+
+      vi.setSystemTime(2_000);
+      summaryAggregator.startMissedLiveTurn("session-1", mark);
+      expect(summaryAggregator.getLiveTurnStartedAt("session-1")).toBe(1_000);
+
+      const staleMark = summaryAggregator.getTurnEndMark();
+      emitIdle("session-1");
+      summaryAggregator.startMissedLiveTurn("session-1", staleMark);
+      expect(summaryAggregator.getLiveTurnStartedAt("session-1")).toBeNull();
+    });
+
     it("forgets the turn on a session error, a reconnect and a session change", () => {
       summaryAggregator.setSession("session-1");
 
