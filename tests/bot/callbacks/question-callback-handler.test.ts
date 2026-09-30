@@ -16,12 +16,14 @@ import type { AppContainer } from "../../../src/app/bootstrap/app-container.js";
 
 const mocked = vi.hoisted(() => ({
   questionReplyMock: vi.fn(),
+  questionRejectMock: vi.fn(),
 }));
 
 vi.mock("../../../src/opencode/client.js", () => ({
   opencodeClient: {
     question: {
       reply: mocked.questionReplyMock,
+      reject: mocked.questionRejectMock,
     },
   },
 }));
@@ -127,6 +129,8 @@ describe("bot question menu/callbacks", () => {
     container.interactionManager.clear("test_setup");
     mocked.questionReplyMock.mockReset();
     mocked.questionReplyMock.mockResolvedValue({ data: true, error: undefined });
+    mocked.questionRejectMock.mockReset();
+    mocked.questionRejectMock.mockResolvedValue({ data: true, error: undefined });
   });
 
   it("shows question details and keyboard in one message", async () => {
@@ -322,7 +326,7 @@ describe("bot question menu/callbacks", () => {
     });
   });
 
-  it("cancels poll and clears question interaction", async () => {
+  it("dismisses the question in OpenCode on Cancel and then closes the poll", async () => {
     const api = createApi([300]);
 
     container.questionManager.startQuestions([QUESTION_ONE], "req-4", "session-1");
@@ -333,11 +337,199 @@ describe("bot question menu/callbacks", () => {
 
     expect(handled).toBe(true);
     expect(cancelCtx.answerCallbackQuery).toHaveBeenCalledWith({ text: t("common.cancelled") });
-    expect(cancelCtx.editMessageText).toHaveBeenCalledWith(t("question.cancelled"));
+    expect(mocked.questionRejectMock).toHaveBeenCalledWith({
+      requestID: "req-4",
+      directory: "D:/repo",
+    });
+    await vi.waitFor(() => {
+      expect(api.editMessageText).toHaveBeenCalledWith(123, 300, t("question.cancelled"));
+    });
+    expect(cancelCtx.editMessageText).not.toHaveBeenCalled();
     expect(api.deleteMessage).not.toHaveBeenCalled();
     expect(container.questionManager.isActive()).toBe(false);
-    expect(container.questionManager.getTotalQuestions()).toBe(0);
     expect(container.interactionManager.getSnapshot()).toBeNull();
+  });
+
+  it("keeps the poll open and ignores its buttons while the dismissal is on its way", async () => {
+    const api = createApi([301]);
+    let resolveReject: (value: { data: boolean; error: undefined }) => void = () => {};
+    mocked.questionRejectMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveReject = resolve;
+      }),
+    );
+
+    container.questionManager.startQuestions([QUESTION_ONE], "req-wait", "session-1");
+    await showCurrentQuestion(api, 123, createDeps());
+    await pressButton("question:custom:0", 301, api);
+    await pressButton("question:cancel:0", 301, api);
+
+    expect(container.questionManager.isActive()).toBe(true);
+    expect(container.questionManager.isWaitingForCustomInput(0)).toBe(false);
+    expect(api.editMessageText).not.toHaveBeenCalled();
+
+    const selectCtx = createCallbackContext("question:select:0:0", 301, api);
+    await handleQuestionCallback(selectCtx, createDeps());
+    await pressButton("question:cancel:0", 301, api);
+
+    expect(selectCtx.answerCallbackQuery).toHaveBeenCalledWith();
+    expect(mocked.questionReplyMock).not.toHaveBeenCalled();
+    expect(mocked.questionRejectMock).toHaveBeenCalledTimes(1);
+
+    const textCtx = createTextContext("my custom", api);
+    await handleQuestionTextAnswer(textCtx, createDeps());
+    expect(textCtx.reply).toHaveBeenCalledWith(t("question.use_custom_button_first"));
+
+    resolveReject({ data: true, error: undefined });
+    await vi.waitFor(() => {
+      expect(container.questionManager.isActive()).toBe(false);
+    });
+  });
+
+  it("leaves the poll answerable with a warning when the dismissal fails", async () => {
+    const api = createApi([302, 303]);
+    mocked.questionRejectMock.mockResolvedValueOnce({
+      data: undefined,
+      error: new Error("fetch failed"),
+    });
+
+    container.questionManager.startQuestions([QUESTION_ONE], "req-fail", "session-1");
+    await showCurrentQuestion(api, 123, createDeps());
+    await pressButton("question:cancel:0", 302, api);
+
+    const editMock = api.editMessageText as unknown as ReturnType<typeof vi.fn>;
+    await vi.waitFor(() => {
+      expect(editMock).toHaveBeenCalled();
+    });
+    const [, messageId, content, options] = defined(editMock.mock.calls[0]);
+    expect(messageId).toBe(302);
+    expect(JSON.stringify(content)).toContain(t("permission.delivery_failed"));
+    expect(JSON.stringify(content)).toContain(QUESTION_ONE.question);
+    expect(options).toHaveProperty("reply_markup");
+    expect(container.questionManager.isActive()).toBe(true);
+    expect(container.questionManager.isDismissing()).toBe(false);
+    expect(container.questionManager.hasLastCancelFailed()).toBe(true);
+
+    await pressButton("question:cancel:0", 302, api);
+
+    expect(mocked.questionRejectMock).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => {
+      expect(api.editMessageText).toHaveBeenCalledWith(123, 302, t("question.cancelled"));
+    });
+    expect(container.questionManager.isActive()).toBe(false);
+  });
+
+  it("warns instead of closing the poll when there is no request to dismiss", async () => {
+    const api = createApi([310]);
+
+    container.questionManager.startQuestions([QUESTION_ONE], "", "session-1");
+    await showCurrentQuestion(api, 123, createDeps());
+    await pressButton("question:cancel:0", 310, api);
+
+    expect(mocked.questionRejectMock).not.toHaveBeenCalled();
+    const editMock = api.editMessageText as unknown as ReturnType<typeof vi.fn>;
+    const [, messageId, content, options] = defined(editMock.mock.calls[0]);
+    expect(messageId).toBe(310);
+    expect(JSON.stringify(content)).toContain(t("permission.delivery_failed"));
+    expect(options).toHaveProperty("reply_markup");
+    expect(container.questionManager.isActive()).toBe(true);
+  });
+
+  it("answers normally when a choice is tapped after a failed dismissal", async () => {
+    const api = createApi([304, 305]);
+    mocked.questionRejectMock.mockResolvedValueOnce({ data: undefined, error: { name: "Boom" } });
+
+    container.questionManager.startQuestions([QUESTION_ONE], "req-choice", "session-1");
+    await showCurrentQuestion(api, 123, createDeps());
+    await pressButton("question:cancel:0", 304, api);
+    await vi.waitFor(() => {
+      expect(container.questionManager.hasLastCancelFailed()).toBe(true);
+    });
+
+    await pressButton("question:select:0:1", 304, api);
+
+    expect(mocked.questionReplyMock).toHaveBeenCalledWith(
+      expect.objectContaining({ requestID: "req-choice" }),
+    );
+    expect(container.questionManager.isActive()).toBe(false);
+  });
+
+  it.each([
+    [{ name: "NotFoundError", data: { message: "gone" } }],
+    [{ _tag: "QuestionNotFoundError", requestID: "req-gone", message: "gone" }],
+  ])("closes the poll as cancelled outside when OpenCode no longer has it", async (error) => {
+    const api = createApi([306]);
+    mocked.questionRejectMock.mockResolvedValueOnce({ data: undefined, error });
+
+    container.questionManager.startQuestions([QUESTION_ONE], "req-gone", "session-1");
+    await showCurrentQuestion(api, 123, createDeps());
+    await pressButton("question:cancel:0", 306, api);
+
+    const editMock = api.editMessageText as unknown as ReturnType<typeof vi.fn>;
+    await vi.waitFor(() => {
+      expect(editMock).toHaveBeenCalled();
+    });
+    const [, , content, options] = defined(editMock.mock.calls[0]);
+    expect(JSON.stringify(content)).toContain(t("question.settled_outside.cancelled"));
+    expect(options ?? {}).not.toHaveProperty("reply_markup");
+    expect(container.questionManager.isActive()).toBe(false);
+  });
+
+  it("closes the poll as answered outside when OpenCode reported an answer meanwhile", async () => {
+    const api = createApi([307]);
+    mocked.questionRejectMock.mockImplementationOnce(async () => {
+      container.questionManager.noteSettledWhileDismissing("answered");
+      return { data: undefined, error: { name: "NotFoundError" } };
+    });
+
+    container.questionManager.startQuestions([QUESTION_ONE], "req-answered", "session-1");
+    await showCurrentQuestion(api, 123, createDeps());
+    await pressButton("question:cancel:0", 307, api);
+
+    const editMock = api.editMessageText as unknown as ReturnType<typeof vi.fn>;
+    await vi.waitFor(() => {
+      expect(editMock).toHaveBeenCalled();
+    });
+    expect(JSON.stringify(defined(editMock.mock.calls[0])[2])).toContain(
+      t("question.settled_outside.answered"),
+    );
+  });
+
+  it("closes the poll as cancelled when the reply was lost but OpenCode reported the dismissal", async () => {
+    const api = createApi([308]);
+    mocked.questionRejectMock.mockImplementationOnce(async () => {
+      container.questionManager.noteSettledWhileDismissing("cancelled");
+      throw new Error("socket hang up");
+    });
+
+    container.questionManager.startQuestions([QUESTION_ONE], "req-lost", "session-1");
+    await showCurrentQuestion(api, 123, createDeps());
+    await pressButton("question:cancel:0", 308, api);
+
+    await vi.waitFor(() => {
+      expect(api.editMessageText).toHaveBeenCalledWith(123, 308, t("question.cancelled"));
+    });
+    expect(container.questionManager.isActive()).toBe(false);
+  });
+
+  it("changes nothing when the poll was ended before the dismissal came back", async () => {
+    const api = createApi([309]);
+    let resolveReject: (value: { data: boolean; error: undefined }) => void = () => {};
+    mocked.questionRejectMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveReject = resolve;
+      }),
+    );
+
+    container.questionManager.startQuestions([QUESTION_ONE], "req-reset", "session-1");
+    await showCurrentQuestion(api, 123, createDeps());
+    await pressButton("question:cancel:0", 309, api);
+
+    container.interactionManager.reset("abort_command");
+    resolveReject({ data: true, error: undefined });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(api.editMessageText).not.toHaveBeenCalled();
   });
 
   it("requires at least one selected option on multiple submit", async () => {

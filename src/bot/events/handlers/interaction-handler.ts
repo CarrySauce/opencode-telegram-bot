@@ -2,7 +2,11 @@ import { getDeleteCompactProgressOnFinish } from "../../../app/stores/settings-s
 import { logger } from "../../../utils/logger.js";
 import type { PermissionRequest } from "../../../app/types/permission.js";
 import type { Question } from "../../../app/types/question.js";
-import { closeQuestionSettledOutside, showCurrentQuestion } from "../../menus/question-menu.js";
+import {
+  closeQuestionCancelled,
+  closeQuestionSettledOutside,
+  showCurrentQuestion,
+} from "../../menus/question-menu.js";
 import {
   applyPermissionPromptChanges,
   showPermissionRequest,
@@ -197,6 +201,11 @@ export function registerInteractionHandlers(deps: InteractionDeps): void {
       return;
     }
 
+    // A dismissal or answers sent from Telegram fail or end the tool: the poll is left to them.
+    if (questionManager.isSettlingFromTelegram()) {
+      return;
+    }
+
     logger.info("[Bot] Question tool failed, clearing active poll and deleting messages");
 
     const messageIds = questionManager.getMessageIds();
@@ -218,6 +227,12 @@ export function registerInteractionHandlers(deps: InteractionDeps): void {
       return;
     }
 
+    // The dismissal sent by Cancel is on its way: its result decides how the poll ends.
+    if (questionManager.isDismissing()) {
+      questionManager.noteSettledWhileDismissing(outcome);
+      return;
+    }
+
     // The poll is being answered from Telegram: this event is OpenCode confirming it.
     if (questionManager.isAnsweredFromTelegram()) {
       return;
@@ -226,6 +241,12 @@ export function registerInteractionHandlers(deps: InteractionDeps): void {
     const destination = policy.getDestination(sessionId);
     if (!destination) {
       questionManager.clear();
+      return;
+    }
+
+    // The Cancel reported as not delivered did get through after all.
+    if (outcome === "cancelled" && questionManager.hasLastCancelFailed()) {
+      await closeQuestionCancelled(destination.api, destination.chatId, deps);
       return;
     }
 

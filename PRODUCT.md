@@ -59,6 +59,7 @@ No public inbound ports are required for normal usage.
 - Handle OpenCode questions with inline options and custom text answers; the custom answer button is offered only when the question accepts a custom answer
 - Questions asked by a subagent of the followed session appear in the chat like the main agent's and are answered to that subagent
 - A question answered or cancelled outside Telegram (OpenCode TUI, web, another client) closes the poll on screen: its buttons go and a line says it was answered or cancelled outside Telegram
+- The poll's Cancel button dismisses the whole question request in OpenCode (`question.reject`), for the main agent and for a subagent alike: once OpenCode takes it the poll turns into `❌ Poll cancelled`, answers already chosen are not sent, and the agent's turn ends without a reply or footer; a Cancel that does not reach OpenCode leaves the poll answerable with a line saying so
 - In a multi-select question the custom text becomes one more tickable row next to the options, and Done sends it together with the ticked options
 - Send selected/custom answers back to OpenCode (`question.reply`); on V2 a tapped choice is sent as the value OpenCode expects, while the buttons and the summary show its label
 - Handle permission requests interactively (`allow once` / `always` / `reject`), from the main agent and from subagents of the followed session

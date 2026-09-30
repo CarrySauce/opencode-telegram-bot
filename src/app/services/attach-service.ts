@@ -247,7 +247,7 @@ function snapshotTrackedRequests(deps: RestoreAfterReconnectDeps): TrackedReques
  * while the stream was down: they end as answered outside Telegram, and waiting requests
  * that are gone leave the queue. Only requests tracked before the lists were requested
  * are checked — one that arrived meanwhile is missing from the lists without being
- * settled. Answers being sent from Telegram are left to that send.
+ * settled. Answers or a dismissal being sent from Telegram are left to that send.
  */
 async function settleRequestsGoneWhileDisconnected(
   deps: RestoreAfterReconnectDeps,
@@ -266,7 +266,7 @@ async function settleRequestsGoneWhileDisconnected(
       shownId &&
       !pendingIds.has(shownId) &&
       deps.questionManager.getRequestID() === shownId &&
-      !deps.questionManager.isAnsweredFromTelegram() &&
+      !deps.questionManager.isSettlingFromTelegram() &&
       attachPresentation
     ) {
       await attachPresentation.closeQuestionSettledOutside(deps.bot.api, deps.chatId);

@@ -517,6 +517,13 @@ describe("attach/service", () => {
       await restorePendingInteractionsAfterReconnect({ ...deps, bot: createBot(), chatId: 777 });
 
       expect(mocked.closeQuestionSettledOutsideMock).not.toHaveBeenCalled();
+
+      container.questionManager.startQuestions([], "question-2", "session-1");
+      container.questionManager.startDismissal();
+
+      await restorePendingInteractionsAfterReconnect({ ...deps, bot: createBot(), chatId: 777 });
+
+      expect(mocked.closeQuestionSettledOutsideMock).not.toHaveBeenCalled();
     });
 
     it("drops waiting requests OpenCode no longer lists", async () => {

@@ -239,24 +239,84 @@ export async function closeQuestionSettledOutside(
       ? "question.settled_outside.answered"
       : "question.settled_outside.cancelled",
   );
+  const part = question ? formatQuestionDetailsPart(question, deps, line) : null;
 
   logger.info(
     `[QuestionHandler] Poll settled outside Telegram: requestID=${questionManager.getRequestID()}, outcome=${outcome}`,
   );
 
-  if (question && messageId !== null) {
-    await editRenderedBotPart({
-      api: bot,
-      chatId,
-      messageId,
-      part: formatQuestionDetailsPart(question, deps, line),
-    }).catch((err) => {
+  // Release the poll before the edit: the question tool's error, which follows a dismissal,
+  // must not find it active and delete it.
+  clearQuestionInteraction("question_settled_outside", deps);
+  questionManager.clear();
+
+  if (part && messageId !== null) {
+    await editRenderedBotPart({ api: bot, chatId, messageId, part }).catch((err) => {
       logger.warn("[QuestionHandler] Failed to close the settled poll message:", err);
     });
   }
+}
 
-  clearQuestionInteraction("question_settled_outside", deps);
-  questionManager.clear();
+/**
+ * Closes the poll after OpenCode took the dismissal sent by its Cancel button: the question
+ * message is replaced by the cancelled line, and the slot is released.
+ */
+export async function closeQuestionCancelled(
+  bot: Context["api"],
+  chatId: number,
+  deps: QuestionStateDeps,
+): Promise<void> {
+  const { questionManager } = deps;
+  const messageId = questionManager.getActiveMessageId();
+
+  // Released before the edit, like a poll settled outside Telegram.
+  questionManager.cancel();
+
+  if (messageId !== null) {
+    await bot.editMessageText(chatId, messageId, t("question.cancelled")).catch((err) => {
+      logger.warn("[QuestionHandler] Failed to close the cancelled poll message:", err);
+    });
+  }
+}
+
+/**
+ * The dismissal did not reach OpenCode: the question keeps its text and buttons and says so.
+ */
+export async function showQuestionDeliveryWarning(
+  bot: Context["api"],
+  chatId: number,
+  deps: QuestionDataDeps,
+): Promise<void> {
+  const { questionManager } = deps;
+  const question = questionManager.getCurrentQuestion();
+  const messageId = questionManager.getActiveMessageId();
+  if (!question || messageId === null) {
+    return;
+  }
+
+  await editRenderedBotPart({
+    api: bot,
+    chatId,
+    messageId,
+    part: formatQuestionDetailsPart(question, deps, t("permission.delivery_failed")),
+    options: {
+      reply_markup: buildQuestionKeyboard(
+        question,
+        questionManager.getSelectedOptions(questionManager.getCurrentIndex()),
+        deps,
+      ),
+    },
+  }).catch((err) => {
+    // The warning from an earlier failed Cancel may still be on the poll.
+    if (!isMessageNotModifiedError(err)) {
+      logger.warn("[QuestionHandler] Failed to show the delivery warning in the poll:", err);
+    }
+  });
+}
+
+function isMessageNotModifiedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.toLowerCase().includes("message is not modified");
 }
 
 async function sendAllAnswersToAgent(

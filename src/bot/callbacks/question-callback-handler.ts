@@ -1,15 +1,24 @@
 import type { Context } from "grammy";
 import type { AppContainer } from "../../app/bootstrap/app-container.js";
+import { opencodeClient } from "../../opencode/client.js";
+import { getCurrentProject } from "../../app/stores/settings-store.js";
+import { getCurrentSession } from "../../app/services/session-service.js";
 import {
   clearQuestionInteraction,
+  closeQuestionCancelled,
+  closeQuestionSettledOutside,
   showCurrentQuestion,
   showNextQuestion,
+  showQuestionDeliveryWarning,
   syncQuestionInteractionState,
   updateQuestionMessage,
 } from "../menus/question-menu.js";
 import { t } from "../../i18n/index.js";
 import { logger } from "../../utils/logger.js";
-import { alert, cancelPrompt } from "./feedback.js";
+import { isOpencodeNotFoundError } from "../../utils/opencode-error.js";
+import { isRecord } from "../../utils/type-guards.js";
+import { safeBackgroundTask } from "../../utils/safe-background-task.js";
+import { alert } from "./feedback.js";
 
 export type QuestionCallbackDeps = Pick<
   AppContainer,
@@ -24,6 +33,16 @@ function getCallbackMessageId(ctx: Context): number | null {
 
   const messageId = (message as { message_id?: number }).message_id;
   return typeof messageId === "number" ? messageId : null;
+}
+
+/** How OpenCode took a dismissal: accepted, gone (already settled) or not reached. */
+type DismissalResult = "accepted" | "gone" | "failed";
+
+function isQuestionRequestNotFound(error: unknown): boolean {
+  return (
+    isOpencodeNotFoundError(error) ||
+    (isRecord(error) && error._tag === "QuestionNotFoundError")
+  );
 }
 
 export async function handleQuestionCallback(
@@ -50,6 +69,14 @@ export async function handleQuestionCallback(
     await ctx.answerCallbackQuery({ text: t("question.inactive_callback"), show_alert: true });
     return true;
   }
+
+  if (deps.questionManager.isDismissing()) {
+    // The dismissal is on its way: no button of the poll does anything until it lands.
+    await ctx.answerCallbackQuery();
+    return true;
+  }
+
+  deps.questionManager.clearLastCancelFailed();
 
   const parts = data.split(":");
   const action = parts[1];
@@ -224,9 +251,91 @@ async function handleToggleCustomAnswer(
 }
 
 async function handleCancelPoll(ctx: Context, deps: QuestionCallbackDeps): Promise<void> {
-  deps.questionManager.cancel();
+  const { questionManager } = deps;
+  const requestID = questionManager.getRequestID();
+  const directory = getCurrentSession()?.directory ?? getCurrentProject()?.worktree;
+  const chatId = ctx.chat?.id;
 
-  await cancelPrompt(ctx, "question.cancelled");
+  if (!requestID || !directory || chatId === undefined) {
+    // Nothing can be sent: the poll stays answerable and says the Cancel did not get through.
+    logger.error("[QuestionHandler] No requestID or project for dismissing the question");
+    await ctx.answerCallbackQuery();
+    if (chatId !== undefined) {
+      await showQuestionDeliveryWarning(ctx.api, chatId, deps);
+    }
+    return;
+  }
+
+  questionManager.startDismissal();
+  syncQuestionInteractionState(
+    "callback",
+    questionManager.getCurrentIndex(),
+    questionManager.getActiveMessageId(),
+    deps,
+  );
+
+  // The dismissal is marked as being sent: a lost toast must not keep it from going out.
+  await ctx.answerCallbackQuery({ text: t("common.cancelled") }).catch((err) => {
+    logger.warn("[QuestionHandler] Failed to answer the cancel callback:", err);
+  });
+
+  logger.info(`[QuestionHandler] Dismissing question via question.reject: requestID=${requestID}`);
+
+  safeBackgroundTask({
+    taskName: "question.reject",
+    task: async (): Promise<DismissalResult> => {
+      const { error } = await opencodeClient.question.reject({ requestID, directory });
+      if (!error) {
+        return "accepted";
+      }
+
+      if (isQuestionRequestNotFound(error)) {
+        logger.debug(`[QuestionHandler] Question already settled: requestID=${requestID}`);
+        return "gone";
+      }
+
+      logger.error(`[QuestionHandler] Failed to dismiss question: requestID=${requestID}`, error);
+      return "failed";
+    },
+    onSuccess: (result) => finishDismissal(ctx.api, chatId, deps, requestID, result),
+    onError: () => finishDismissal(ctx.api, chatId, deps, requestID, "failed"),
+  });
+}
+
+/**
+ * Ends the poll once OpenCode answered the dismissal, or leaves it answerable with a
+ * warning when the dismissal did not get through. A poll something else already ended
+ * stays as it is.
+ */
+async function finishDismissal(
+  api: Context["api"],
+  chatId: number,
+  deps: QuestionCallbackDeps,
+  requestID: string,
+  result: DismissalResult,
+): Promise<void> {
+  const { questionManager } = deps;
+  if (!questionManager.isDismissing() || questionManager.getRequestID() !== requestID) {
+    logger.info(`[QuestionHandler] Dismissal finished for a poll already closed: ${requestID}`);
+    return;
+  }
+
+  const settled = questionManager.getSettledWhileDismissing();
+  logger.info(
+    `[QuestionHandler] Dismissal finished: requestID=${requestID}, result=${result}, settled=${settled ?? "none"}`,
+  );
+
+  if (settled === "answered") {
+    await closeQuestionSettledOutside(api, chatId, "answered", deps);
+  } else if (result === "gone") {
+    await closeQuestionSettledOutside(api, chatId, "cancelled", deps);
+  } else if (result === "accepted" || settled === "cancelled") {
+    // A lost reply still counts when OpenCode reported the question dismissed.
+    await closeQuestionCancelled(api, chatId, deps);
+  } else {
+    questionManager.failDismissal();
+    await showQuestionDeliveryWarning(api, chatId, deps);
+  }
 }
 
 export async function handleQuestionTextAnswer(

@@ -1,4 +1,10 @@
-import type { Question, QuestionOption, QuestionState, QuestionAnswer } from "../types/question.js";
+import type {
+  Question,
+  QuestionOption,
+  QuestionState,
+  QuestionAnswer,
+  QuestionSettledOutcome,
+} from "../types/question.js";
 import type { InteractionManager } from "./interaction-manager.js";
 import { logger } from "../../utils/logger.js";
 
@@ -61,6 +67,9 @@ export class QuestionManager {
         requestID,
         sessionId,
         answeredFromTelegram: false,
+        dismissing: false,
+        settledWhileDismissing: null,
+        lastCancelFailed: false,
       },
     });
     return true;
@@ -84,6 +93,63 @@ export class QuestionManager {
 
   isAnsweredFromTelegram(): boolean {
     return this.state?.answeredFromTelegram ?? false;
+  }
+
+  /**
+   * Cancel was tapped: the dismissal is being sent to OpenCode. A custom-text wait ends
+   * here, so text typed afterwards is never taken as an answer.
+   */
+  startDismissal(): void {
+    const state = this.state;
+    if (state) {
+      state.dismissing = true;
+      state.settledWhileDismissing = null;
+      state.lastCancelFailed = false;
+      state.customInputQuestionIndex = null;
+    }
+  }
+
+  isDismissing(): boolean {
+    return this.state?.dismissing ?? false;
+  }
+
+  /** The dismissal did not reach OpenCode: the poll stays answerable. */
+  failDismissal(): void {
+    const state = this.state;
+    if (state) {
+      state.dismissing = false;
+      state.settledWhileDismissing = null;
+      state.lastCancelFailed = true;
+    }
+  }
+
+  /** OpenCode reported the question settled while the dismissal was on its way. */
+  noteSettledWhileDismissing(outcome: QuestionSettledOutcome): void {
+    const state = this.state;
+    if (state?.dismissing && state.settledWhileDismissing !== "answered") {
+      state.settledWhileDismissing = outcome;
+    }
+  }
+
+  getSettledWhileDismissing(): QuestionSettledOutcome | null {
+    return this.state?.settledWhileDismissing ?? null;
+  }
+
+  hasLastCancelFailed(): boolean {
+    return this.state?.lastCancelFailed ?? false;
+  }
+
+  clearLastCancelFailed(): void {
+    const state = this.state;
+    if (state) {
+      state.lastCancelFailed = false;
+    }
+  }
+
+  /** Answers or a dismissal are being sent from Telegram: the poll is left to that send. */
+  isSettlingFromTelegram(): boolean {
+    const state = this.state;
+    return (state?.answeredFromTelegram ?? false) || (state?.dismissing ?? false);
   }
 
   getCurrentQuestion(): Question | null {

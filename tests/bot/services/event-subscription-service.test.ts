@@ -435,6 +435,27 @@ function emitQuestionSettled(
   } as unknown as Event);
 }
 
+/** OpenCode fails the question tool when its question is dismissed. */
+function emitQuestionToolError(
+  summaryAggregator: { processEvent(event: Event): void },
+  sessionID = "session-1",
+): void {
+  summaryAggregator.processEvent({
+    type: "message.part.updated",
+    properties: {
+      part: {
+        id: "part-question",
+        sessionID,
+        messageID: "message-1",
+        type: "tool",
+        callID: "call-question",
+        tool: "question",
+        state: { status: "error", input: {}, metadata: {}, error: "dismissed" },
+      },
+    },
+  } as unknown as Event);
+}
+
 function emitQuestionAsked(
   summaryAggregator: { processEvent(event: Event): void },
   requestID: string,
@@ -2320,6 +2341,74 @@ describe("bot/services/event-subscription-service", () => {
         expect(questionManager.isActive()).toBe(false);
       });
       expect(pollEdits(api, 720)[0]).toContain(t("question.settled_outside.cancelled"));
+    });
+
+    it("keeps a poll cancelled outside Telegram when the question tool fails right after", async () => {
+      const { api, summaryAggregator } = await setupService(true);
+      const { questionManager } = getInteractionManagers();
+      api.sendMessage.mockResolvedValueOnce({ message_id: 721 });
+
+      emitQuestionAsked(summaryAggregator, "question-1");
+      await vi.waitFor(() => {
+        expect(questionManager.getActiveMessageId()).toBe(721);
+      });
+      // The edit takes a network round trip: the tool error lands while it is on its way.
+      api.editMessageText.mockImplementation(
+        () => new Promise((resolve) => setTimeout(() => resolve(true), 10)),
+      );
+
+      emitQuestionSettled(summaryAggregator, "question.rejected", "question-1");
+      emitQuestionToolError(summaryAggregator);
+      await settle();
+
+      expect(questionManager.isActive()).toBe(false);
+      expect(pollEdits(api, 721)[0]).toContain(t("question.settled_outside.cancelled"));
+      expect(api.deleteMessage).not.toHaveBeenCalledWith(42, 721);
+    });
+
+    it("leaves a poll whose Cancel is on its way to the dismissal", async () => {
+      const { api, summaryAggregator } = await setupService(true);
+      const { questionManager } = getInteractionManagers();
+      api.sendMessage.mockResolvedValueOnce({ message_id: 722 });
+
+      emitQuestionAsked(summaryAggregator, "question-1");
+      await vi.waitFor(() => {
+        expect(questionManager.getActiveMessageId()).toBe(722);
+      });
+      questionManager.startDismissal();
+
+      emitQuestionSettled(summaryAggregator, "question.rejected", "question-1");
+      emitQuestionToolError(summaryAggregator);
+      await settle();
+
+      expect(questionManager.isActive()).toBe(true);
+      expect(questionManager.getSettledWhileDismissing()).toBe("cancelled");
+      expect(pollEdits(api, 722)).toHaveLength(0);
+      expect(api.deleteMessage).not.toHaveBeenCalledWith(42, 722);
+    });
+
+    it("ends a poll whose Cancel was reported lost as cancelled once OpenCode reports it", async () => {
+      const { api, summaryAggregator } = await setupService(true);
+      const { questionManager } = getInteractionManagers();
+      api.sendMessage.mockResolvedValueOnce({ message_id: 723 });
+
+      emitQuestionAsked(summaryAggregator, "question-1");
+      await vi.waitFor(() => {
+        expect(questionManager.getActiveMessageId()).toBe(723);
+      });
+      questionManager.startDismissal();
+      questionManager.failDismissal();
+      api.editMessageText.mockImplementation(
+        () => new Promise((resolve) => setTimeout(() => resolve(true), 10)),
+      );
+
+      emitQuestionSettled(summaryAggregator, "question.rejected", "question-1");
+      emitQuestionToolError(summaryAggregator);
+      await settle();
+
+      expect(questionManager.isActive()).toBe(false);
+      expect(api.editMessageText).toHaveBeenCalledWith(42, 723, t("question.cancelled"));
+      expect(api.deleteMessage).not.toHaveBeenCalledWith(42, 723);
     });
 
     it("leaves a poll answered from Telegram to its own summary", async () => {

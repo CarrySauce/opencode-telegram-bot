@@ -69,6 +69,37 @@ describe("questionManager", () => {
     expect(questionManager.isAnsweredFromTelegram()).toBe(false);
   });
 
+  it("tracks a dismissal sent by Cancel", () => {
+    questionManager.startQuestions([SINGLE_QUESTION], "req-1", "session-1");
+    questionManager.startCustomInput(0);
+    expect(questionManager.isDismissing()).toBe(false);
+    expect(questionManager.isSettlingFromTelegram()).toBe(false);
+
+    questionManager.startDismissal();
+    expect(questionManager.isDismissing()).toBe(true);
+    expect(questionManager.isSettlingFromTelegram()).toBe(true);
+    expect(questionManager.isWaitingForCustomInput(0)).toBe(false);
+
+    questionManager.noteSettledWhileDismissing("answered");
+    questionManager.noteSettledWhileDismissing("cancelled");
+    expect(questionManager.getSettledWhileDismissing()).toBe("answered");
+
+    questionManager.failDismissal();
+    expect(questionManager.isDismissing()).toBe(false);
+    expect(questionManager.getSettledWhileDismissing()).toBeNull();
+    expect(questionManager.hasLastCancelFailed()).toBe(true);
+
+    questionManager.noteSettledWhileDismissing("cancelled");
+    expect(questionManager.getSettledWhileDismissing()).toBeNull();
+
+    questionManager.clearLastCancelFailed();
+    expect(questionManager.hasLastCancelFailed()).toBe(false);
+
+    questionManager.startDismissal();
+    questionManager.startQuestions([SINGLE_QUESTION], "req-2", "session-1");
+    expect(questionManager.isDismissing()).toBe(false);
+  });
+
   it("keeps no custom-answer input once the poll is closed", () => {
     questionManager.startQuestions([SINGLE_QUESTION], "req-1", "session-1");
     questionManager.startCustomInput(0);

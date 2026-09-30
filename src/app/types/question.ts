@@ -31,6 +31,12 @@ export interface QuestionState {
   requestID: string | null;
   sessionId: string;
   answeredFromTelegram: boolean;
+  /** Cancel was tapped and the dismissal is on its way to OpenCode. */
+  dismissing: boolean;
+  /** How OpenCode reported the question settled while the dismissal was on its way. */
+  settledWhileDismissing: QuestionSettledOutcome | null;
+  /** The last Cancel did not reach OpenCode and nothing was tapped since. */
+  lastCancelFailed: boolean;
 }
 
 /** How a question was settled outside Telegram. */

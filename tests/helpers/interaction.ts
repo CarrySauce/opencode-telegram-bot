@@ -34,6 +34,9 @@ export function startInteractionForTest(
           requestID: null,
           sessionId: "session-test",
           answeredFromTelegram: false,
+          dismissing: false,
+          settledWhileDismissing: null,
+          lastCancelFailed: false,
         },
       });
     case "permission":
