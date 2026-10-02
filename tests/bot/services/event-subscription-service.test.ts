@@ -2384,7 +2384,7 @@ describe("bot/services/event-subscription-service", () => {
       await settle();
 
       expect(questionManager.isActive()).toBe(true);
-      expect(questionManager.getSettledWhileDismissing()).toBe("cancelled");
+      expect(questionManager.getSettledWhileSending()).toBe("cancelled");
       expect(pollEdits(api, 722)).toHaveLength(0);
       expect(api.deleteMessage).not.toHaveBeenCalledWith(42, 722);
     });
@@ -2422,7 +2422,7 @@ describe("bot/services/event-subscription-service", () => {
       await vi.waitFor(() => {
         expect(questionManager.getActiveMessageId()).toBe(730);
       });
-      questionManager.markAnsweredFromTelegram();
+      questionManager.startAnswer();
 
       emitQuestionSettled(summaryAggregator, "question.replied", "question-1");
       await settle();
@@ -2469,6 +2469,191 @@ describe("bot/services/event-subscription-service", () => {
       await settle();
 
       expect(questionManager.getRequestID()).toBe("question-child");
+    });
+
+    describe("polls whose question ends before they reach the chat", () => {
+      /** Holds the messages before the next poll, as a Telegram rate limit would. */
+      function holdMessagesBeforePoll(): () => void {
+        const runtime = (activeService as unknown as {
+          runtime: { letOutReplies(sessionId: string): Promise<void> };
+        }).runtime;
+        let release: () => void = () => {};
+        vi.spyOn(runtime, "letOutReplies").mockReturnValueOnce(
+          new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+        );
+        return () => release();
+      }
+
+      /** Holds the next message the bot sends until released. */
+      function holdNextSend(api: FakeBotApi, messageId: number): () => void {
+        let release: () => void = () => {};
+        api.sendMessage.mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              release = () => resolve({ message_id: messageId });
+            }),
+        );
+        return () => release();
+      }
+
+      function pollTextSent(api: FakeBotApi, requestID: string): boolean {
+        return JSON.stringify(api.sendMessage.mock.calls).includes(`Which option for ${requestID}?`);
+      }
+
+      it("never shows a poll whose question was cancelled while the messages before it went out", async () => {
+        const { api, summaryAggregator } = await setupService(true);
+        const { questionManager } = getInteractionManagers();
+        const release = holdMessagesBeforePoll();
+
+        emitQuestionAsked(summaryAggregator, "question-1");
+        await settle();
+        emitQuestionSettled(summaryAggregator, "question.rejected", "question-1");
+        await settle();
+        release();
+        await settle();
+
+        expect(pollTextSent(api, "question-1")).toBe(false);
+        expect(questionManager.isActive()).toBe(false);
+      });
+
+      it("never shows a poll whose run was reset while the messages before it went out", async () => {
+        const { api, summaryAggregator } = await setupService(true);
+        const { questionManager, interactionManager } = getInteractionManagers();
+        const release = holdMessagesBeforePoll();
+
+        emitQuestionAsked(summaryAggregator, "question-1");
+        await settle();
+        interactionManager.reset("abort_command");
+        release();
+        await settle();
+
+        expect(pollTextSent(api, "question-1")).toBe(false);
+        expect(questionManager.isActive()).toBe(false);
+      });
+
+      it("still shows a pending poll when only a permission clear moved the generation", async () => {
+        const { summaryAggregator } = await setupService(true);
+        const { questionManager, interactionManager } = getInteractionManagers();
+        const release = holdMessagesBeforePoll();
+
+        emitQuestionAsked(summaryAggregator, "question-1");
+        await settle();
+        interactionManager.bumpGeneration();
+        release();
+
+        await vi.waitFor(() => {
+          expect(questionManager.getActiveMessageId()).not.toBeNull();
+        });
+        expect(questionManager.getRequestID()).toBe("question-1");
+      });
+
+      it("closes a poll that lands after its question was cancelled outside Telegram", async () => {
+        const { api, summaryAggregator } = await setupService(true);
+        const { questionManager } = getInteractionManagers();
+        const release = holdNextSend(api, 760);
+
+        emitQuestionAsked(summaryAggregator, "question-1");
+        await vi.waitFor(() => {
+          expect(questionManager.getRequestID()).toBe("question-1");
+        });
+        emitQuestionSettled(summaryAggregator, "question.rejected", "question-1");
+        await settle();
+        release();
+        await settle();
+
+        const edits = pollEdits(api, 760);
+        expect(edits).toHaveLength(1);
+        expect(edits[0]).toContain(t("question.settled_outside.cancelled"));
+        expect(edits[0]).not.toContain("reply_markup");
+        expect(questionManager.isActive()).toBe(false);
+      });
+
+      it("keeps the first ending when a reset comes before OpenCode's own cancel", async () => {
+        const { api, summaryAggregator } = await setupService(true);
+        const { questionManager, interactionManager } = getInteractionManagers();
+        const release = holdNextSend(api, 761);
+
+        emitQuestionAsked(summaryAggregator, "question-1");
+        await vi.waitFor(() => {
+          expect(questionManager.getRequestID()).toBe("question-1");
+        });
+        interactionManager.reset("abort_command");
+        emitQuestionSettled(summaryAggregator, "question.rejected", "question-1");
+        await settle();
+        release();
+        await settle();
+
+        const edits = pollEdits(api, 761);
+        expect(edits).toHaveLength(1);
+        expect(edits[0]).toContain(t("question.not_answered"));
+        expect(questionManager.isActive()).toBe(false);
+      });
+
+      it("ends a poll that lands after its run ended and frees the slot", async () => {
+        const { api, summaryAggregator } = await setupService(true);
+        const { questionManager, interactionManager } = getInteractionManagers();
+        const release = holdNextSend(api, 762);
+
+        emitQuestionAsked(summaryAggregator, "question-1");
+        await vi.waitFor(() => {
+          expect(questionManager.getRequestID()).toBe("question-1");
+        });
+        const aggregator = summaryAggregator as unknown as {
+          onSessionRunEndedCallback: (sessionId: string) => Promise<void>;
+        };
+        await aggregator.onSessionRunEndedCallback("session-1");
+        release();
+        await settle();
+
+        const edits = pollEdits(api, 762);
+        expect(edits).toHaveLength(1);
+        expect(edits[0]).toContain(t("question.not_answered"));
+        expect(interactionManager.getSnapshot()).toBeNull();
+      });
+
+      it("deletes a poll that lands after a newer poll of its session replaced it", async () => {
+        const { api, summaryAggregator } = await setupService(true);
+        const { questionManager } = getInteractionManagers();
+        const release = holdNextSend(api, 763);
+        api.sendMessage.mockResolvedValueOnce({ message_id: 764 });
+
+        emitQuestionAsked(summaryAggregator, "question-1");
+        await vi.waitFor(() => {
+          expect(questionManager.getRequestID()).toBe("question-1");
+        });
+        emitQuestionAsked(summaryAggregator, "question-2");
+        await vi.waitFor(() => {
+          expect(questionManager.getActiveMessageId()).toBe(764);
+        });
+        release();
+
+        await vi.waitFor(() => {
+          expect(api.deleteMessage).toHaveBeenCalledWith(42, 763);
+        });
+        expect(questionManager.getRequestID()).toBe("question-2");
+        expect(pollEdits(api, 763)).toHaveLength(0);
+      });
+
+      it("ends a poll on screen as not answered when a reset drops it", async () => {
+        const { api, summaryAggregator } = await setupService(true);
+        const { questionManager, interactionManager } = getInteractionManagers();
+        api.sendMessage.mockResolvedValueOnce({ message_id: 765 });
+
+        emitQuestionAsked(summaryAggregator, "question-1");
+        await vi.waitFor(() => {
+          expect(questionManager.getActiveMessageId()).toBe(765);
+        });
+        interactionManager.reset("abort_command");
+        await settle();
+
+        const edits = pollEdits(api, 765);
+        expect(edits).toHaveLength(1);
+        expect(edits[0]).toContain(t("question.not_answered"));
+        expect(edits[0]).toContain("Which option for question-1?");
+        expect(edits[0]).not.toContain("reply_markup");
+      });
     });
   });
 

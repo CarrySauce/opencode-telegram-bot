@@ -58,15 +58,72 @@ describe("questionManager", () => {
     expect(questionManager.getSessionId()).toBe("session-a");
   });
 
-  it("marks a poll answered from Telegram until it is cleared", () => {
+  it("tracks answers sent from Telegram until they fail or the poll is cleared", () => {
     questionManager.startQuestions([SINGLE_QUESTION], "req-1", "session-1");
-    expect(questionManager.isAnsweredFromTelegram()).toBe(false);
+    questionManager.startCustomInput(0);
+    expect(questionManager.isAnswering()).toBe(false);
 
-    questionManager.markAnsweredFromTelegram();
-    expect(questionManager.isAnsweredFromTelegram()).toBe(true);
+    questionManager.startAnswer();
+    expect(questionManager.isAnswering()).toBe(true);
+    expect(questionManager.isSettlingFromTelegram()).toBe(true);
+    expect(questionManager.isWaitingForCustomInput(0)).toBe(false);
 
+    questionManager.noteSettledWhileSending("cancelled");
+    expect(questionManager.getSettledWhileSending()).toBe("cancelled");
+
+    questionManager.failAnswer();
+    expect(questionManager.isAnswering()).toBe(false);
+    expect(questionManager.getSettledWhileSending()).toBeNull();
+    expect(questionManager.isActive()).toBe(true);
+
+    questionManager.startAnswer();
     questionManager.clear();
-    expect(questionManager.isAnsweredFromTelegram()).toBe(false);
+    expect(questionManager.isAnswering()).toBe(false);
+  });
+
+  it("drops the custom answer of a single-select question when its answers fail", () => {
+    questionManager.startQuestions([SINGLE_QUESTION], "req-1", "session-1");
+    questionManager.setCustomAnswer(0, "my own");
+    questionManager.startAnswer();
+
+    questionManager.failAnswer();
+
+    expect(questionManager.hasCustomAnswer(0)).toBe(false);
+  });
+
+  it("keeps the custom row of a multi-select question when its answers fail", () => {
+    questionManager.startQuestions([MULTIPLE_QUESTION], "req-1", "session-1");
+    questionManager.setCustomAnswer(0, "my own");
+    questionManager.startAnswer();
+
+    questionManager.failAnswer();
+
+    expect(questionManager.getAnswerItems(0)).toEqual(["my own"]);
+  });
+
+  it("records the first ending of a question whose poll is in flight", () => {
+    questionManager.trackInFlight("req-1", "session-1");
+    questionManager.trackInFlight("req-2", "session-2");
+    questionManager.trackInFlight("req-3", "session-1");
+
+    questionManager.endInFlight("req-1", "not_answered");
+    questionManager.endInFlight("req-1", "cancelled");
+    questionManager.endInFlightForSession("session-1", "answered");
+    questionManager.endInFlight("req-untracked", "cancelled");
+
+    expect(questionManager.getInFlightEnding("req-1")).toBe("not_answered");
+    expect(questionManager.getInFlightEnding("req-2")).toBeNull();
+    expect(questionManager.getInFlightEnding("req-3")).toBe("answered");
+    expect(questionManager.getInFlightEnding("req-untracked")).toBeNull();
+
+    questionManager.endAllInFlight("not_answered");
+    expect(questionManager.getInFlightEnding("req-2")).toBe("not_answered");
+
+    // Tracking again keeps the entry and its ending; untracking forgets both.
+    questionManager.trackInFlight("req-2", "session-2");
+    expect(questionManager.getInFlightEnding("req-2")).toBe("not_answered");
+    questionManager.untrackInFlight("req-2");
+    expect(questionManager.getInFlightEnding("req-2")).toBeNull();
   });
 
   it("tracks a dismissal sent by Cancel", () => {
@@ -80,17 +137,17 @@ describe("questionManager", () => {
     expect(questionManager.isSettlingFromTelegram()).toBe(true);
     expect(questionManager.isWaitingForCustomInput(0)).toBe(false);
 
-    questionManager.noteSettledWhileDismissing("answered");
-    questionManager.noteSettledWhileDismissing("cancelled");
-    expect(questionManager.getSettledWhileDismissing()).toBe("answered");
+    questionManager.noteSettledWhileSending("answered");
+    questionManager.noteSettledWhileSending("cancelled");
+    expect(questionManager.getSettledWhileSending()).toBe("answered");
 
     questionManager.failDismissal();
     expect(questionManager.isDismissing()).toBe(false);
-    expect(questionManager.getSettledWhileDismissing()).toBeNull();
+    expect(questionManager.getSettledWhileSending()).toBeNull();
     expect(questionManager.hasLastCancelFailed()).toBe(true);
 
-    questionManager.noteSettledWhileDismissing("cancelled");
-    expect(questionManager.getSettledWhileDismissing()).toBeNull();
+    questionManager.noteSettledWhileSending("cancelled");
+    expect(questionManager.getSettledWhileSending()).toBeNull();
 
     questionManager.clearLastCancelFailed();
     expect(questionManager.hasLastCancelFailed()).toBe(false);

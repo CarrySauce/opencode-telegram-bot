@@ -75,6 +75,12 @@ export type WaitingAgentRequestListener = (
 /** Permission prompts still on screen when the slot holding them was dropped. */
 export type DroppedPermissionPromptsListener = (state: PermissionState) => void;
 
+/** A poll dropped by a reset or an error cleanup, with the state it held. */
+export type DroppedQuestionListener = (state: QuestionState) => void;
+
+/** Every reset of the slot and the queue, whatever the slot held. */
+export type InteractionResetListener = () => void;
+
 export interface TransitionInteractionOptions {
   expectedInput?: ExpectedInput | undefined;
   allowedCommands?: string[] | undefined;

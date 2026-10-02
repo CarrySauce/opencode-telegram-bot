@@ -521,7 +521,7 @@ describe("attach/service", () => {
 
       container.permissionManager.clear();
       container.questionManager.startQuestions([], "question-1", "session-1");
-      container.questionManager.markAnsweredFromTelegram();
+      container.questionManager.startAnswer();
 
       await restorePendingInteractionsAfterReconnect({ ...deps, bot: createBot(), chatId: 777 });
 

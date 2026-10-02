@@ -7,16 +7,17 @@ import {
   clearQuestionInteraction,
   closeQuestionCancelled,
   closeQuestionSettledOutside,
+  isQuestionRequestGone,
   showCurrentQuestion,
   showNextQuestion,
   showQuestionDeliveryWarning,
+  submitPollAnswers,
   syncQuestionInteractionState,
   updateQuestionMessage,
+  type QuestionReplyResult,
 } from "../menus/question-menu.js";
 import { t } from "../../i18n/index.js";
 import { logger } from "../../utils/logger.js";
-import { isOpencodeNotFoundError } from "../../utils/opencode-error.js";
-import { isRecord } from "../../utils/type-guards.js";
 import { safeBackgroundTask } from "../../utils/safe-background-task.js";
 import { alert } from "./feedback.js";
 
@@ -35,14 +36,9 @@ function getCallbackMessageId(ctx: Context): number | null {
   return typeof messageId === "number" ? messageId : null;
 }
 
-/** How OpenCode took a dismissal: accepted, gone (already settled) or not reached. */
-type DismissalResult = "accepted" | "gone" | "failed";
-
-function isQuestionRequestNotFound(error: unknown): boolean {
-  return (
-    isOpencodeNotFoundError(error) ||
-    (isRecord(error) && error._tag === "QuestionNotFoundError")
-  );
+/** The poll's last question: answering it sends the whole poll to OpenCode. */
+function isLastQuestion(deps: QuestionCallbackDeps, questionIndex: number): boolean {
+  return questionIndex === deps.questionManager.getTotalQuestions() - 1;
 }
 
 export async function handleQuestionCallback(
@@ -70,8 +66,8 @@ export async function handleQuestionCallback(
     return true;
   }
 
-  if (deps.questionManager.isDismissing()) {
-    // The dismissal is on its way: no button of the poll does anything until it lands.
+  if (deps.questionManager.isSettlingFromTelegram()) {
+    // The answers or the dismissal are on their way: no button does anything until they land.
     await ctx.answerCallbackQuery();
     return true;
   }
@@ -168,13 +164,13 @@ async function handleSelectOption(
     await ctx.answerCallbackQuery();
   } else {
     logger.debug("[QuestionHandler] Single choice mode, moving to next question");
+    const requestID = deps.questionManager.getRequestID();
     await ctx.answerCallbackQuery();
 
     const answer = deps.questionManager.getSelectedAnswer(questionIndex);
     logger.debug(`[QuestionHandler] Selected answer for question ${questionIndex}: ${answer}`);
 
-    await ctx.deleteMessage().catch(() => {});
-    await showNextQuestion(ctx, deps);
+    await answerStep(ctx, deps, questionIndex, requestID);
   }
 }
 
@@ -205,7 +201,34 @@ async function handleSubmitAnswer(
     `[QuestionHandler] Submit answer for question ${questionIndex}: ${deps.questionManager.getAnswerItems(questionIndex).join(" | ")}`,
   );
 
+  const requestID = deps.questionManager.getRequestID();
   await ctx.answerCallbackQuery();
+  await answerStep(ctx, deps, questionIndex, requestID);
+}
+
+/**
+ * A question was answered: the last one sends the poll's answers and stays on screen until
+ * OpenCode takes them, an earlier one gives way to the next question. A poll that was closed
+ * while the tap was being acknowledged (settled outside Telegram, a reset) is left as it is.
+ */
+async function answerStep(
+  ctx: Context,
+  deps: QuestionCallbackDeps,
+  questionIndex: number,
+  requestID: string | null,
+): Promise<void> {
+  if (deps.questionManager.getRequestID() !== requestID || !deps.questionManager.isActive()) {
+    logger.info(`[QuestionHandler] Poll closed while its tap was handled: requestID=${requestID}`);
+    return;
+  }
+
+  if (isLastQuestion(deps, questionIndex)) {
+    if (ctx.chat) {
+      await submitPollAnswers(ctx.api, ctx.chat.id, deps);
+    }
+    return;
+  }
+
   await ctx.deleteMessage().catch(() => {});
   await showNextQuestion(ctx, deps);
 }
@@ -283,13 +306,13 @@ async function handleCancelPoll(ctx: Context, deps: QuestionCallbackDeps): Promi
 
   safeBackgroundTask({
     taskName: "question.reject",
-    task: async (): Promise<DismissalResult> => {
+    task: async (): Promise<QuestionReplyResult> => {
       const { error } = await opencodeClient.question.reject({ requestID, directory });
       if (!error) {
         return "accepted";
       }
 
-      if (isQuestionRequestNotFound(error)) {
+      if (isQuestionRequestGone(error)) {
         logger.debug(`[QuestionHandler] Question already settled: requestID=${requestID}`);
         return "gone";
       }
@@ -312,7 +335,7 @@ async function finishDismissal(
   chatId: number,
   deps: QuestionCallbackDeps,
   requestID: string,
-  result: DismissalResult,
+  result: QuestionReplyResult,
 ): Promise<void> {
   const { questionManager } = deps;
   if (!questionManager.isDismissing() || questionManager.getRequestID() !== requestID) {
@@ -320,7 +343,7 @@ async function finishDismissal(
     return;
   }
 
-  const settled = questionManager.getSettledWhileDismissing();
+  const settled = questionManager.getSettledWhileSending();
   logger.info(
     `[QuestionHandler] Dismissal finished: requestID=${requestID}, result=${result}, settled=${settled ?? "none"}`,
   );
@@ -363,6 +386,13 @@ export async function handleQuestionTextAnswer(
 
   deps.questionManager.setCustomAnswer(currentIndex, text);
   deps.questionManager.clearCustomInput();
+
+  if (!multiple && isLastQuestion(deps, currentIndex)) {
+    if (ctx.chat) {
+      await submitPollAnswers(ctx.api, ctx.chat.id, deps);
+    }
+    return;
+  }
 
   const activeMessageId = deps.questionManager.getActiveMessageId();
   if (activeMessageId !== null && ctx.chat) {

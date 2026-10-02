@@ -3,6 +3,7 @@ import { logger } from "../../../utils/logger.js";
 import type { PermissionRequest } from "../../../app/types/permission.js";
 import type { Question } from "../../../app/types/question.js";
 import {
+  closeDroppedPoll,
   closeQuestionCancelled,
   closeQuestionSettledOutside,
   showCurrentQuestion,
@@ -43,17 +44,40 @@ async function presentQuestion(
   sessionId: string,
   generation: number | null,
 ): Promise<void> {
-  const { runtime, policy, interactionManager, questionManager } = deps;
-  const destination = policy.getDestination(sessionId);
-  if (!destination) {
+  const { questionManager } = deps;
+  if (!deps.policy.getDestination(sessionId)) {
     logger.error("Bot or chat ID not available for showing questions");
     return;
   }
 
-  const followedSessionId = getFollowedSessionId(deps, sessionId);
-  if (!policy.isForegroundSession(followedSessionId)) {
+  if (!deps.policy.isForegroundSession(getFollowedSessionId(deps, sessionId))) {
     return;
   }
+
+  // While the messages before the poll go out, a settle, reset or run end of its question
+  // is recorded for it, so the poll is not shown for a question that is gone.
+  questionManager.trackInFlight(requestID, sessionId);
+  try {
+    await showOrQueueQuestion(deps, questions, requestID, sessionId, generation);
+  } finally {
+    questionManager.untrackInFlight(requestID);
+  }
+}
+
+async function showOrQueueQuestion(
+  deps: InteractionDeps,
+  questions: Question[],
+  requestID: string,
+  sessionId: string,
+  generation: number | null,
+): Promise<void> {
+  const { runtime, policy, interactionManager, questionManager } = deps;
+  const destination = policy.getDestination(sessionId);
+  if (!destination) {
+    return;
+  }
+
+  const followedSessionId = getFollowedSessionId(deps, sessionId);
 
   await Promise.all([
     runtime.toolMessageBatcher.flushSession(sessionId, "question_asked"),
@@ -69,12 +93,19 @@ async function presentQuestion(
     return;
   }
 
+  const ending = questionManager.getInFlightEnding(requestID);
+  if (ending) {
+    logger.info(`[Bot] Dropping poll whose question ended before it was shown: requestID=${requestID}, ending=${ending}`);
+    return;
+  }
+
   if (!policy.isForegroundSession(followedSessionId)) {
     return;
   }
 
   const replacing = questionManager.isActive() && questionManager.getSessionId() === sessionId;
   const previousMessageIds = replacing ? questionManager.getMessageIds() : [];
+  const previousRequestID = replacing ? questionManager.getRequestID() : null;
   if (!questionManager.startQuestions(questions, requestID, sessionId)) {
     // A released poll that has to wait again keeps its turn at the head of the queue.
     interactionManager.waitQuestion(questions, requestID, sessionId, {
@@ -86,6 +117,11 @@ async function presentQuestion(
   if (isCompactProgressMode()) {
     await runtime.compactProgressStreamer.flushPending(followedSessionId);
     runtime.compactProgressStreamer.holdForClose(followedSessionId);
+  }
+
+  if (previousRequestID && previousRequestID !== requestID) {
+    // A replaced poll whose message is still on its way is deleted when it lands.
+    questionManager.endInFlight(previousRequestID, "replaced");
   }
 
   if (previousMessageIds.length > 0) {
@@ -196,6 +232,8 @@ export function registerInteractionHandlers(deps: InteractionDeps): void {
   });
 
   summaryAggregator.setOnQuestionError(async (sessionId) => {
+    questionManager.endInFlightForSession(sessionId, "not_answered");
+
     if (!questionManager.isActive() || questionManager.getSessionId() !== sessionId) {
       interactionManager.dropWaitingQuestionsForSession(sessionId);
       return;
@@ -222,19 +260,17 @@ export function registerInteractionHandlers(deps: InteractionDeps): void {
   });
 
   summaryAggregator.setOnQuestionSettled(async (sessionId, requestID, outcome) => {
+    // A poll whose message is still on its way ends with this outcome once it lands.
+    questionManager.endInFlight(requestID, outcome);
+
     if (!questionManager.isActive() || questionManager.getRequestID() !== requestID) {
       interactionManager.dropWaitingQuestion(requestID);
       return;
     }
 
-    // The dismissal sent by Cancel is on its way: its result decides how the poll ends.
-    if (questionManager.isDismissing()) {
-      questionManager.noteSettledWhileDismissing(outcome);
-      return;
-    }
-
-    // The poll is being answered from Telegram: this event is OpenCode confirming it.
-    if (questionManager.isAnsweredFromTelegram()) {
+    // The answers or the dismissal are on their way: their result decides how the poll ends.
+    if (questionManager.isSettlingFromTelegram()) {
+      questionManager.noteSettledWhileSending(outcome);
       return;
     }
 
@@ -274,6 +310,18 @@ export function registerInteractionHandlers(deps: InteractionDeps): void {
     }
   });
 
+  // A reset ends every poll still on its way to the chat, whatever the slot holds.
+  interactionManager.setOnReset(() => {
+    questionManager.endAllInFlight("not_answered");
+  });
+
+  interactionManager.setOnQuestionDropped((state) => {
+    const destination = policy.getDestination(state.sessionId);
+    if (destination) {
+      void closeDroppedPoll(destination.api, destination.chatId, state);
+    }
+  });
+
   interactionManager.setOnPermissionPromptsDropped((state) => {
     const changes = [...state.requestsByMessageId].map(([messageId, request]) => ({
       messageId,
@@ -310,6 +358,7 @@ export function registerInteractionHandlers(deps: InteractionDeps): void {
 
   summaryAggregator.setOnSessionRunEnded(async (sessionId) => {
     interactionManager.dropWaitingQuestionsForSession(sessionId);
+    questionManager.endInFlightForSession(sessionId, "not_answered");
     const changes = permissionManager.endSessionPrompts(sessionId, { kind: "not_answered" });
     if (changes.length === 0) {
       return;

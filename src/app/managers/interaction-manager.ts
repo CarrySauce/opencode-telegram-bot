@@ -1,8 +1,10 @@
 import type {
   ActiveInteraction,
   DroppedPermissionPromptsListener,
+  DroppedQuestionListener,
   InteractionClearReason,
   InteractionPayloads,
+  InteractionResetListener,
   InteractionState,
   StartInteractionOptions,
   StatefulInteractionKind,
@@ -94,6 +96,8 @@ export class InteractionManager {
   private generation = 0;
   private onWaitingRequestReady: WaitingAgentRequestListener | null = null;
   private onPermissionPromptsDropped: DroppedPermissionPromptsListener | null = null;
+  private onQuestionDropped: DroppedQuestionListener | null = null;
+  private onReset: InteractionResetListener | null = null;
   // Request IDs taken out of the queue whose presentation has not finished yet.
   private releasingRequestIds = new Set<string>();
 
@@ -240,7 +244,13 @@ export class InteractionManager {
 
     this.waiting = [];
     this.bumpGeneration();
-    this.drop(reason);
+    this.dropAndEndPoll(() => this.drop(reason));
+
+    try {
+      this.onReset?.();
+    } catch (err) {
+      logger.error("[InteractionManager] Error in reset listener:", err);
+    }
 
     const message =
       `[InteractionCleanup] Cleared state: reason=${reason}, ` +
@@ -265,14 +275,14 @@ export class InteractionManager {
     const stateBefore = this.getSnapshot();
 
     if (scope === "interaction") {
-      this.clear(reason);
+      this.dropAndEndPoll(() => this.clear(reason));
     } else {
       if (scope === "permission") {
         // Bump first, so a poll released by this clear carries the new generation.
         this.bumpGeneration();
       }
 
-      this.clearKind(SCOPE_TO_INTERACTION_KIND[scope], reason);
+      this.dropAndEndPoll(() => this.clearKind(SCOPE_TO_INTERACTION_KIND[scope], reason));
     }
 
     logger.debug(
@@ -403,6 +413,33 @@ export class InteractionManager {
 
   setOnPermissionPromptsDropped(listener: DroppedPermissionPromptsListener | null): void {
     this.onPermissionPromptsDropped = listener;
+  }
+
+  setOnQuestionDropped(listener: DroppedQuestionListener | null): void {
+    this.onQuestionDropped = listener;
+  }
+
+  setOnReset(listener: InteractionResetListener | null): void {
+    this.onReset = listener;
+  }
+
+  /**
+   * Runs a cleanup drop and hands a poll it removed to the listener, so the poll gets its
+   * "not answered" ending instead of dead buttons. Explicit closes of a poll write their own
+   * ending and do not come through here.
+   */
+  private dropAndEndPoll(dropSlot: () => void): void {
+    const poll = this.state?.kind === "question" ? this.state.payload : null;
+    dropSlot();
+    if (!poll || (this.state?.kind === "question" && this.state.payload === poll)) {
+      return;
+    }
+
+    try {
+      this.onQuestionDropped?.(poll);
+    } catch (err) {
+      logger.error("[InteractionManager] Error in dropped poll listener:", err);
+    }
   }
 
   private releaseHead(after: string): void {

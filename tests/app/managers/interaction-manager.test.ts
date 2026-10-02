@@ -374,6 +374,40 @@ describe("interactionManager waiting request", () => {
     expect([...listener.mock.calls[0]![0].requestsByMessageId.keys()]).toEqual([102]);
   });
 
+  it("reports a poll dropped by a reset or an error cleanup, not by its own close", () => {
+    const listener = vi.fn();
+    interactionManager.setOnQuestionDropped(listener);
+
+    startPoll();
+    questionManager.clear();
+    expect(listener).not.toHaveBeenCalled();
+
+    startPoll();
+    interactionManager.clearErrorScope("question", "question_handler_error");
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    startPoll();
+    interactionManager.reset("abort_command");
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(listener.mock.calls[1]![0].sessionId).toBe("session-1");
+
+    permissionManager.startPermission(permission("perm-1"), 101);
+    interactionManager.reset("abort_command");
+    expect(listener).toHaveBeenCalledTimes(2);
+  });
+
+  it("tells the reset listener about every reset, an empty slot included", () => {
+    const listener = vi.fn();
+    interactionManager.setOnReset(listener);
+
+    interactionManager.reset("abort_command");
+    startPoll();
+    interactionManager.reset("session_created");
+    interactionManager.clearErrorScope("interaction", "bot_unhandled_error");
+
+    expect(listener).toHaveBeenCalledTimes(2);
+  });
+
   it("clearKind leaves another kind in place", () => {
     startPoll();
 

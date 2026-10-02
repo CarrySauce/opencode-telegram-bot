@@ -478,7 +478,7 @@ describe("bot question menu/callbacks", () => {
   it("closes the poll as answered outside when OpenCode reported an answer meanwhile", async () => {
     const api = createApi([307]);
     mocked.questionRejectMock.mockImplementationOnce(async () => {
-      container.questionManager.noteSettledWhileDismissing("answered");
+      container.questionManager.noteSettledWhileSending("answered");
       return { data: undefined, error: { name: "NotFoundError" } };
     });
 
@@ -498,7 +498,7 @@ describe("bot question menu/callbacks", () => {
   it("closes the poll as cancelled when the reply was lost but OpenCode reported the dismissal", async () => {
     const api = createApi([308]);
     mocked.questionRejectMock.mockImplementationOnce(async () => {
-      container.questionManager.noteSettledWhileDismissing("cancelled");
+      container.questionManager.noteSettledWhileSending("cancelled");
       throw new Error("socket hang up");
     });
 
@@ -700,7 +700,7 @@ describe("bot question menu/callbacks", () => {
     const api = createApi([850, 851]);
     const markedAtReply: boolean[] = [];
     mocked.questionReplyMock.mockImplementation(async () => {
-      markedAtReply.push(container.questionManager.isAnsweredFromTelegram());
+      markedAtReply.push(container.questionManager.isAnswering());
       return { data: true, error: undefined };
     });
 
@@ -799,5 +799,226 @@ describe("bot question menu/callbacks", () => {
       123,
       expect.stringContaining(t("question.summary.answer", { answer: "* Allow search via Exa: " })),
     );
+  });
+});
+
+describe("poll answers delivered to OpenCode", () => {
+  beforeEach(() => {
+    mocked.questionReplyMock.mockReset();
+    mocked.questionReplyMock.mockResolvedValue({ data: true, error: undefined });
+    mocked.questionRejectMock.mockReset();
+    mocked.questionRejectMock.mockResolvedValue({ data: true, error: undefined });
+  });
+
+  function editsOf(api: Context["api"], messageId: number): string[] {
+    const editMock = api.editMessageText as unknown as ReturnType<typeof vi.fn>;
+    return editMock.mock.calls
+      .filter((call) => call[1] === messageId)
+      .map((call) => JSON.stringify(call[2]));
+  }
+
+  it("keeps the last question on screen until OpenCode takes the answers", async () => {
+    const api = createApi([900, 901]);
+    let resolveReply: (value: { data: boolean; error: undefined }) => void = () => {};
+    mocked.questionReplyMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveReply = resolve;
+      }),
+    );
+
+    container.questionManager.startQuestions([QUESTION_ONE], "req-wait", "session-1");
+    await showCurrentQuestion(api, 123, createDeps());
+    await pressButton("question:select:0:0", 900, api);
+
+    expect(api.deleteMessage).not.toHaveBeenCalledWith(123, 900);
+    expect(container.questionManager.isAnswering()).toBe(true);
+
+    // Buttons do nothing while the answers are on their way.
+    await pressButton("question:select:0:1", 900, api);
+    expect(mocked.questionReplyMock).toHaveBeenCalledTimes(1);
+
+    resolveReply({ data: true, error: undefined });
+    await vi.waitFor(() => {
+      expect(container.questionManager.isActive()).toBe(false);
+    });
+    expect(api.deleteMessage).toHaveBeenCalledWith(123, 900);
+    expect(api.sendMessage).toHaveBeenLastCalledWith(
+      123,
+      expect.stringContaining(t("question.summary.title")),
+    );
+  });
+
+  it("leaves the poll answerable with a warning when the answers fail, and a retap resends", async () => {
+    const api = createApi([910, 911]);
+    mocked.questionReplyMock.mockResolvedValueOnce({
+      data: undefined,
+      error: { _tag: "FormInvalidAnswerError", message: "invalid" },
+    });
+
+    container.questionManager.startQuestions([QUESTION_ONE, QUESTION_TWO], "req-fail", "session-1");
+    await showCurrentQuestion(api, 123, createDeps());
+    await pressButton("question:select:0:0", 910, api);
+    await pressButton("question:select:1:0", 911, api);
+
+    await vi.waitFor(() => {
+      expect(editsOf(api, 911).join()).toContain(t("permission.delivery_failed"));
+    });
+    const editMock = api.editMessageText as unknown as ReturnType<typeof vi.fn>;
+    expect(defined(editMock.mock.calls.at(-1))[3]).toHaveProperty("reply_markup");
+    expect(container.questionManager.isActive()).toBe(true);
+    expect(container.questionManager.getCurrentIndex()).toBe(1);
+    expect(api.deleteMessage).not.toHaveBeenCalledWith(123, 911);
+
+    await pressButton("question:select:1:1", 911, api);
+
+    await vi.waitFor(() => {
+      expect(container.questionManager.isActive()).toBe(false);
+    });
+    expect(mocked.questionReplyMock).toHaveBeenCalledTimes(2);
+    expect(mocked.questionReplyMock.mock.calls[1]?.[0]).toMatchObject({
+      requestID: "req-fail",
+      answers: [["* Yes: accept"], ["* Beta: second"]],
+    });
+  });
+
+  it.each([
+    [{ name: "NotFoundError", data: { message: "gone" } }],
+    [{ _tag: "FormAlreadySettledError", message: "Form already settled" }],
+  ])("closes the poll as answered outside when OpenCode already settled it", async (error) => {
+    const api = createApi([920]);
+    mocked.questionReplyMock.mockResolvedValueOnce({ data: undefined, error });
+
+    container.questionManager.startQuestions([QUESTION_ONE], "req-gone", "session-1");
+    await showCurrentQuestion(api, 123, createDeps());
+    await pressButton("question:select:0:0", 920, api);
+
+    await vi.waitFor(() => {
+      expect(container.questionManager.isActive()).toBe(false);
+    });
+    expect(editsOf(api, 920).join()).toContain(t("question.settled_outside.answered"));
+    expect(editsOf(api, 920).join()).not.toContain(t("permission.delivery_failed"));
+  });
+
+  it("closes the poll as cancelled outside when OpenCode reported a cancel meanwhile", async () => {
+    const api = createApi([925]);
+    mocked.questionReplyMock.mockImplementationOnce(async () => {
+      container.questionManager.noteSettledWhileSending("cancelled");
+      return { data: undefined, error: { _tag: "FormAlreadySettledError", message: "settled" } };
+    });
+
+    container.questionManager.startQuestions([QUESTION_ONE], "req-cancelled", "session-1");
+    await showCurrentQuestion(api, 123, createDeps());
+    await pressButton("question:select:0:0", 925, api);
+
+    await vi.waitFor(() => {
+      expect(container.questionManager.isActive()).toBe(false);
+    });
+    expect(editsOf(api, 925).join()).toContain(t("question.settled_outside.cancelled"));
+  });
+
+  it("drops a failed custom answer so it is typed again after a new Custom answer tap", async () => {
+    const api = createApi([930]);
+    mocked.questionReplyMock.mockResolvedValueOnce({
+      data: undefined,
+      error: new Error("fetch failed"),
+    });
+
+    container.questionManager.startQuestions([QUESTION_ONE], "req-custom", "session-1");
+    await showCurrentQuestion(api, 123, createDeps());
+    await pressButton("question:custom:0", 930, api);
+    await handleQuestionTextAnswer(createTextContext("my own", api), createDeps());
+
+    await vi.waitFor(() => {
+      expect(editsOf(api, 930).join()).toContain(t("permission.delivery_failed"));
+    });
+    expect(container.questionManager.hasCustomAnswer(0)).toBe(false);
+
+    const strayText = createTextContext("again", api);
+    await handleQuestionTextAnswer(strayText, createDeps());
+    expect(strayText.reply).toHaveBeenCalledWith(t("question.use_custom_button_first"));
+
+    await pressButton("question:custom:0", 930, api);
+    await handleQuestionTextAnswer(createTextContext("my own again", api), createDeps());
+
+    await vi.waitFor(() => {
+      expect(container.questionManager.isActive()).toBe(false);
+    });
+    expect(mocked.questionReplyMock.mock.calls[1]?.[0]).toMatchObject({
+      answers: [["my own again"]],
+    });
+  });
+
+  it("leaves a poll ended by a reset while its answers were on their way as it is", async () => {
+    const api = createApi([940]);
+    mocked.questionReplyMock.mockImplementationOnce(async () => {
+      container.interactionManager.reset("abort_command");
+      return { data: undefined, error: new Error("fetch failed") };
+    });
+
+    container.questionManager.startQuestions([QUESTION_ONE], "req-reset", "session-1");
+    await showCurrentQuestion(api, 123, createDeps());
+    await pressButton("question:select:0:0", 940, api);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(container.questionManager.isActive()).toBe(false);
+    expect(editsOf(api, 940).join()).not.toContain(t("permission.delivery_failed"));
+  });
+
+  it("ends a restored poll whose run ended while its message was on the way, and frees the slot", async () => {
+    const api = createApi([960]);
+    let land: () => void = () => {};
+    const held = () =>
+      new Promise((resolve) => {
+        land = () => resolve({ message_id: 960 });
+      });
+    (api.sendMessage as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(held);
+    (api.sendRichMessage as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(held);
+
+    // As the attach restore does: open the slot, then send the poll.
+    container.questionManager.startQuestions([QUESTION_ONE], "req-restored", "session-1");
+    const shown = showCurrentQuestion(api, 123, createDeps());
+    container.questionManager.endInFlightForSession("session-1", "not_answered");
+    land();
+    await shown;
+
+    expect(editsOf(api, 960).join()).toContain(t("question.not_answered"));
+    expect(container.interactionManager.getSnapshot()).toBeNull();
+  });
+
+  it("leaves a poll settled outside Telegram while its tap was acknowledged with its line", async () => {
+    const api = createApi([970]);
+
+    container.questionManager.startQuestions([QUESTION_ONE], "req-race", "session-1");
+    await showCurrentQuestion(api, 123, createDeps());
+    const ctx = createCallbackContext("question:select:0:0", 970, api);
+    (ctx.answerCallbackQuery as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      async () => {
+        await closeQuestionSettledOutside(api, 123, "cancelled", createDeps());
+      },
+    );
+
+    await handleQuestionCallback(ctx, createDeps());
+
+    expect(ctx.deleteMessage).not.toHaveBeenCalled();
+    expect(api.deleteMessage).not.toHaveBeenCalledWith(123, 970);
+    expect(mocked.questionReplyMock).not.toHaveBeenCalled();
+    expect(editsOf(api, 970).join()).toContain(t("question.settled_outside.cancelled"));
+  });
+
+  it("closes the poll as cancelled outside when Cancel hits an already settled V2 form", async () => {
+    const api = createApi([950]);
+    mocked.questionRejectMock.mockResolvedValueOnce({
+      data: undefined,
+      error: { _tag: "FormAlreadySettledError", message: "settled" },
+    });
+
+    container.questionManager.startQuestions([QUESTION_ONE], "req-cancel-gone", "session-1");
+    await showCurrentQuestion(api, 123, createDeps());
+    await pressButton("question:cancel:0", 950, api);
+
+    await vi.waitFor(() => {
+      expect(container.questionManager.isActive()).toBe(false);
+    });
+    expect(editsOf(api, 950).join()).toContain(t("question.settled_outside.cancelled"));
   });
 });

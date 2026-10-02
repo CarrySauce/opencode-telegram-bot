@@ -35,7 +35,7 @@ export function startInteractionForTest(
           sessionId: "session-test",
           answeredFromTelegram: false,
           dismissing: false,
-          settledWhileDismissing: null,
+          settledWhileSending: null,
           lastCancelFailed: false,
         },
       });
