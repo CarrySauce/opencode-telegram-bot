@@ -112,6 +112,10 @@ export async function opencodeStartCommand(
       // Server not accessible, continue with start.
     }
 
+    // A server that stopped outside the bot leaves the lifecycle ready, and the start below
+    // would then skip the ready refresh (model catalog, selection check, session restore).
+    deps.opencodeReadyLifecycle.notifyUnavailable("opencode_start_not_running");
+
     if (!(await canStartLocalOpencodeServer(localTarget, "always"))) {
       await ctx.reply(t("opencode_start.error"));
       return;

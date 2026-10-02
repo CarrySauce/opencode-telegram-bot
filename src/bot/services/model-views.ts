@@ -1,6 +1,6 @@
 import type { AppContainer } from "../../app/bootstrap/app-container.js";
 import { getStoredModel } from "../../app/services/model-selection-service.js";
-import { waitForLateModelCatalogSettle } from "../../opencode/ready-refresh.js";
+import { watchLateModelCatalogChanges } from "../../opencode/ready-refresh.js";
 import { logger } from "../../utils/logger.js";
 import { safeBackgroundTask } from "../../utils/safe-background-task.js";
 
@@ -15,20 +15,22 @@ export async function refreshModelViews(deps: ModelViewsDeps): Promise<void> {
   }
 }
 
-// The views were drawn before the server listed the selected model's provider.
+// The views were drawn before the model catalog settled: redraw on each later change.
 export function refreshModelViewsAfterLateCatalogSettle(
   deps: ModelViewsDeps,
   reason: string,
 ): void {
+  const nextLateCatalogChange = watchLateModelCatalogChanges();
+
   safeBackgroundTask({
     taskName: "bot.refreshModelViewsAfterLateCatalogSettle",
     task: async () => {
-      if (!(await waitForLateModelCatalogSettle())) {
-        return;
+      while (await nextLateCatalogChange()) {
+        await refreshModelViews(deps);
+        logger.info(
+          `[Bot] Refreshed model views after the model catalog settled: reason=${reason}`,
+        );
       }
-
-      await refreshModelViews(deps);
-      logger.info(`[Bot] Refreshed model views after the model catalog settled: reason=${reason}`);
     },
   });
 }

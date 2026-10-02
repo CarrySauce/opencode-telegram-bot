@@ -115,7 +115,7 @@ export async function selectSessionById(
   setCurrentSession(sessionInfo);
   // Pull before attaching: the pinned message is rendered inside attachToSession
   // and reads the stored model, so its Model line comes out already pulled.
-  applySessionSettings(session);
+  await applySessionSettings(session);
   deps.resetInteractions("session_switched");
 
   await ctx.answerCallbackQuery();

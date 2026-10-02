@@ -19,7 +19,20 @@ const MODEL_CATALOG_WARMUP_POLL_INTERVAL_MS = 5000;
 let readyRefreshRegistered = false;
 let modelCatalogWaitGeneration = 0;
 let cancelModelCatalogWaitDelay: (() => void) | null = null;
-let lateModelCatalogSettle: Promise<boolean> = Promise.resolve(false);
+
+// Changes the background catalog read made after one ready: the stored model replaced, or
+// the selection became listed. Counted per ready, so a watcher attaching late still sees them.
+interface LateModelCatalogChanges {
+  count: number;
+  done: boolean;
+  wakeWatchers: Set<() => void>;
+}
+
+function createLateModelCatalogChanges(done: boolean): LateModelCatalogChanges {
+  return { count: 0, done, wakeWatchers: new Set() };
+}
+
+let lateModelCatalogChanges = createLateModelCatalogChanges(true);
 
 function isModelCatalogComplete(result: StoredModelReconcileResult): boolean {
   return result.catalogAvailable && result.catalogComplete;
@@ -53,61 +66,107 @@ function delayModelCatalogWait(delayMs: number): Promise<void> {
 export function stopModelCatalogWait(): void {
   modelCatalogWaitGeneration++;
   cancelModelCatalogWaitDelay?.();
+  finishLateModelCatalogChanges(lateModelCatalogChanges);
+  lateModelCatalogChanges = createLateModelCatalogChanges(true);
 }
 
 /**
- * Resolves true when, after the ready handler returned, the selected model became listed
- * or fell back to the config model — what the session restore drew is then out of date.
+ * Watch the background catalog read of the latest ready. Each call of the returned function
+ * resolves true for a change the watcher has not seen yet — the selected model became listed
+ * or fell back to the config model, so what was drawn is out of date — and false once that
+ * read has ended (or a newer ready replaced it) with nothing unseen left.
  */
-export function waitForLateModelCatalogSettle(): Promise<boolean> {
-  return lateModelCatalogSettle;
+export function watchLateModelCatalogChanges(): () => Promise<boolean> {
+  const changes = lateModelCatalogChanges;
+  let seenCount = 0;
+
+  return async () => {
+    for (;;) {
+      if (changes.count > seenCount) {
+        seenCount = changes.count;
+        return true;
+      }
+
+      if (changes.done) {
+        return false;
+      }
+
+      await new Promise<void>((resolve) => {
+        changes.wakeWatchers.add(resolve);
+      });
+    }
+  };
 }
 
-// Plugin providers can be listed seconds after the built-in ones: keep reading until every
-// expected provider is listed or the warm-up window closes, then read once more outside it.
-async function waitForCompleteModelCatalog(
+function wakeLateModelCatalogWatchers(changes: LateModelCatalogChanges): void {
+  const wakeWatchers = Array.from(changes.wakeWatchers);
+  changes.wakeWatchers.clear();
+  for (const wake of wakeWatchers) {
+    wake();
+  }
+}
+
+function noteLateModelCatalogChange(changes: LateModelCatalogChanges): void {
+  changes.count++;
+  wakeLateModelCatalogWatchers(changes);
+}
+
+function finishLateModelCatalogChanges(changes: LateModelCatalogChanges): void {
+  changes.done = true;
+  wakeLateModelCatalogWatchers(changes);
+}
+
+// Right after a start the server may list models its config has not filtered out yet, and
+// plugin providers can be listed seconds after the built-in ones: keep reading through the
+// whole warm-up window, then read once more outside it.
+async function waitForSettledModelCatalog(
   reason: string,
   generation: number,
   selectedModelListedOnReturn: boolean,
-): Promise<boolean> {
+  changes: LateModelCatalogChanges,
+): Promise<void> {
+  let selectedModelListed = selectedModelListedOnReturn;
+
   for (;;) {
     await delayModelCatalogWait(MODEL_CATALOG_WARMUP_POLL_INTERVAL_MS);
     if (generation !== modelCatalogWaitGeneration) {
-      return false;
+      return;
     }
 
     const warmupEnded = !isModelCatalogWarmupActive();
     const result = await reconcileStoredModelSelection({ forceCatalogRefresh: true });
     if (generation !== modelCatalogWaitGeneration) {
-      return false;
+      return;
     }
 
-    if (!warmupEnded && !isModelCatalogComplete(result)) {
+    if (result.storedModelReplaced || (!selectedModelListed && result.selectedModelListed)) {
+      noteLateModelCatalogChange(changes);
+    }
+    selectedModelListed = result.selectedModelListed;
+
+    if (!warmupEnded) {
       logger.debug(
-        `[OpenCodeReady] Model catalog still lacks expected providers, retrying: reason=${reason}`,
+        `[OpenCodeReady] Model catalog warm-up still open, reading again: reason=${reason}`,
       );
       continue;
     }
 
-    if (warmupEnded) {
+    if (!isModelCatalogComplete(result)) {
       logger.warn(
         `[OpenCodeReady] Model catalog warm-up ended with expected providers missing: reason=${reason}`,
       );
     }
 
-    return (
-      !selectedModelListedOnReturn && (result.selectedModelListed || result.storedModelReplaced)
-    );
+    return;
   }
 }
 
 // A freshly started server answers health before it lists every model, so wait (bounded)
 // for a catalog naming the selected model before the rest of the ready sequence reads it,
-// and leave waiting for the remaining expected providers to the background.
+// and leave reading through the rest of the warm-up window to the background.
 async function refreshModelCatalogAfterReady(reason: string): Promise<void> {
   stopModelCatalogWait();
   const generation = modelCatalogWaitGeneration;
-  lateModelCatalogSettle = Promise.resolve(false);
   const startedAt = Date.now();
 
   let result = await reconcileStoredModelSelection({ forceCatalogRefresh: true });
@@ -129,21 +188,22 @@ async function refreshModelCatalogAfterReady(reason: string): Promise<void> {
     result = await reconcileStoredModelSelection({ forceCatalogRefresh: true });
   }
 
-  if (generation !== modelCatalogWaitGeneration || isModelCatalogComplete(result)) {
+  if (generation !== modelCatalogWaitGeneration) {
     return;
   }
 
   const selectedModelListedOnReturn = result.selectedModelListed;
   logger.debug(
-    `[OpenCodeReady] Waiting in background for expected model providers: reason=${reason}`,
+    `[OpenCodeReady] Reading the model catalog in background until the warm-up ends: reason=${reason}`,
   );
-  lateModelCatalogSettle = new Promise((resolve) => {
-    safeBackgroundTask({
-      taskName: "opencode.modelCatalogWarmup",
-      task: () => waitForCompleteModelCatalog(reason, generation, selectedModelListedOnReturn),
-      onSuccess: resolve,
-      onError: () => resolve(false),
-    });
+  const changes = createLateModelCatalogChanges(false);
+  lateModelCatalogChanges = changes;
+  safeBackgroundTask({
+    taskName: "opencode.modelCatalogWarmup",
+    task: () =>
+      waitForSettledModelCatalog(reason, generation, selectedModelListedOnReturn, changes),
+    onSuccess: () => finishLateModelCatalogChanges(changes),
+    onError: () => finishLateModelCatalogChanges(changes),
   });
 }
 
@@ -218,5 +278,4 @@ export async function notifyOpencodeReadyIfHealthy(
 
 export function __resetReadyRefreshForTests(): void {
   stopModelCatalogWait();
-  lateModelCatalogSettle = Promise.resolve(false);
 }

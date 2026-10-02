@@ -32,6 +32,7 @@ const mocked = vi.hoisted(() => {
     variant: "high",
   }));
   const setCurrentVariantMock = vi.fn();
+  const resolveModelToAdoptMock = vi.fn();
 
   return {
     appAgentsMock,
@@ -43,6 +44,7 @@ const mocked = vi.hoisted(() => {
     selectModelMock,
     getStoredModelMock,
     setCurrentVariantMock,
+    resolveModelToAdoptMock,
     loggerDebugMock: vi.fn(),
     loggerErrorMock: vi.fn(),
     loggerInfoMock: vi.fn(),
@@ -83,6 +85,7 @@ vi.mock("../../../src/app/services/session-service.js", () => ({
 vi.mock("../../../src/app/services/model-selection-service.js", () => ({
   selectModel: mocked.selectModelMock,
   getStoredModel: mocked.getStoredModelMock,
+  resolveModelToAdopt: mocked.resolveModelToAdoptMock,
 }));
 
 vi.mock("../../../src/app/services/variant-selection-service.js", () => ({
@@ -229,6 +232,8 @@ describe("applyAgentConfiguredSettings", () => {
   beforeEach(() => {
     mocked.appAgentsMock.mockReset();
     mocked.selectModelMock.mockReset();
+    mocked.resolveModelToAdoptMock.mockReset();
+    mocked.resolveModelToAdoptMock.mockImplementation(async (model: unknown) => model);
     mocked.setCurrentVariantMock.mockReset();
     mocked.getStoredModelMock.mockClear();
     mocked.getStoredModelMock.mockReturnValue({
@@ -367,6 +372,57 @@ describe("applyAgentConfiguredSettings", () => {
       modelID: "kimi",
       variant: "high",
     });
+    expect(mocked.setCurrentVariantMock).not.toHaveBeenCalled();
+  });
+
+  it("stores the config model at the default variant instead of one OpenCode no longer offers", async () => {
+    mocked.appAgentsMock.mockResolvedValue(
+      createAgentResponse([
+        {
+          name: "plan",
+          mode: "primary",
+          model: { providerID: "opencode-go", modelID: "kimi" },
+          variant: "max",
+        },
+      ]),
+    );
+    mocked.resolveModelToAdoptMock.mockResolvedValue({
+      providerID: "opencode",
+      modelID: "big-pickle",
+    });
+
+    const modelApplied = await applyAgentConfiguredSettings("plan");
+
+    expect(modelApplied).toBe(true);
+    expect(mocked.resolveModelToAdoptMock).toHaveBeenCalledWith({
+      providerID: "opencode-go",
+      modelID: "kimi",
+    });
+    expect(mocked.selectModelMock).toHaveBeenCalledWith({
+      providerID: "opencode",
+      modelID: "big-pickle",
+      variant: "default",
+    });
+    expect(mocked.setCurrentVariantMock).not.toHaveBeenCalled();
+  });
+
+  it("writes nothing when neither the configured nor the config model is offered", async () => {
+    mocked.appAgentsMock.mockResolvedValue(
+      createAgentResponse([
+        {
+          name: "plan",
+          mode: "primary",
+          model: { providerID: "opencode-go", modelID: "kimi" },
+          variant: "max",
+        },
+      ]),
+    );
+    mocked.resolveModelToAdoptMock.mockResolvedValue(null);
+
+    const modelApplied = await applyAgentConfiguredSettings("plan");
+
+    expect(modelApplied).toBe(false);
+    expect(mocked.selectModelMock).not.toHaveBeenCalled();
     expect(mocked.setCurrentVariantMock).not.toHaveBeenCalled();
   });
 });

@@ -3,6 +3,7 @@ import type { AppContainer } from "../../app/bootstrap/app-container.js";
 import { getStoredAgent, resolveProjectAgent } from "../../app/services/agent-selection-service.js";
 import {
   fetchCurrentModel,
+  getModelAvailability,
   getModelSelectionLists,
   getProviderModels,
   getProviders,
@@ -11,7 +12,7 @@ import {
 } from "../../app/services/model-selection-service.js";
 import { formatVariantForButton } from "../../app/services/variant-selection-service.js";
 import { formatModelForDisplay } from "../../app/types/model.js";
-import type { ModelInfo, ProviderInfo } from "../../app/types/model.js";
+import type { FavoriteModel, ModelInfo, ProviderInfo } from "../../app/types/model.js";
 import { logger } from "../../utils/logger.js";
 import { t } from "../../i18n/index.js";
 import { cancelMenu, failure, switched } from "./feedback.js";
@@ -45,6 +46,7 @@ interface ModelSearchMetadata {
   flow: string;
   stage: string;
   messageId?: number | undefined;
+  query: string;
   models: ModelInfo[];
 }
 
@@ -100,8 +102,9 @@ function parseModelSearchMetadata(deps: ModelSelectionDeps): ModelSearchMetadata
 
   const messageId =
     typeof state.metadata.messageId === "number" ? state.metadata.messageId : undefined;
+  const query = typeof state.metadata.query === "string" ? state.metadata.query : "";
 
-  return { flow, stage, messageId, models: parseModelItems(state.metadata.models) };
+  return { flow, stage, messageId, query, models: parseModelItems(state.metadata.models) };
 }
 
 function parseModelListMetadata(deps: ModelSelectionDeps): ModelListMetadata | null {
@@ -241,6 +244,8 @@ function parseProviderItems(value: unknown): ProviderInfo[] {
 interface ProviderBrowserMetadata {
   providers: ProviderInfo[];
   providersPage: number;
+  providerIndex: number | null;
+  providerModelsPage: number;
   models: ModelInfo[];
 }
 
@@ -254,6 +259,10 @@ function parseProviderBrowserMetadata(deps: ModelSelectionDeps): ProviderBrowser
     providers: parseProviderItems(state.metadata.providers),
     providersPage:
       typeof state.metadata.providersPage === "number" ? state.metadata.providersPage : 0,
+    providerIndex:
+      typeof state.metadata.providerIndex === "number" ? state.metadata.providerIndex : null,
+    providerModelsPage:
+      typeof state.metadata.providerModelsPage === "number" ? state.metadata.providerModelsPage : 0,
     models: parseModelItems(state.metadata.models),
   };
 }
@@ -294,6 +303,124 @@ async function showProvidersScreen(
 
   await renderModelMenuScreen(ctx, view);
   updateModelMenuMetadata(deps, { providers, providersPage: view.page });
+}
+
+async function showModelRootScreen(ctx: Context, deps: ModelSelectionDeps): Promise<void> {
+  const modelLists = await getModelSelectionLists();
+  const view = await buildModelRootMenuView(fetchCurrentModel(), modelLists);
+
+  await renderModelMenuScreen(ctx, view);
+  updateModelMenuMetadata(deps, { modelLists });
+}
+
+async function showProviderModelsScreen(
+  ctx: Context,
+  deps: ModelSelectionDeps,
+  meta: ProviderBrowserMetadata,
+  provider: ProviderInfo,
+  providerIndex: number,
+  page: number,
+): Promise<void> {
+  const models = await getProviderModels(provider.id);
+  const view = buildProviderModelsMenuView(
+    provider,
+    providerIndex,
+    models,
+    page,
+    meta.providersPage,
+    fetchCurrentModel(),
+  );
+
+  await renderModelMenuScreen(ctx, view);
+  updateModelMenuMetadata(deps, {
+    providers: meta.providers,
+    providersPage: meta.providersPage,
+    providerIndex,
+    providerModelsPage: view.page,
+    models: view.pageModels.map((model) => ({
+      providerID: model.providerID,
+      modelID: model.modelID,
+      variant: "default",
+    })),
+  });
+}
+
+function buildModelSearchResultsView(
+  query: string,
+  results: FavoriteModel[],
+): { text: string; keyboard: InlineKeyboard } {
+  const keyboard = new InlineKeyboard();
+
+  for (const [index, model] of results.entries()) {
+    const label = `${model.providerID}/${model.modelID}`;
+    keyboard.text(label, `${MODEL_SEARCH_RESULT_CALLBACK_PREFIX}${index}`).row();
+  }
+
+  keyboard.row();
+  keyboard.text(t("model.search.search_again"), MODEL_SEARCH_AGAIN_CALLBACK);
+  keyboard.text(t("inline.button.cancel"), MODEL_SEARCH_CANCEL_CALLBACK);
+
+  const text =
+    results.length === 0
+      ? t("model.search.no_results", { query })
+      : t("model.search.results_title", { query });
+
+  return { text, keyboard };
+}
+
+function transitionToModelSearchResults(
+  deps: ModelSelectionDeps,
+  query: string,
+  messageId: number | undefined,
+  results: FavoriteModel[],
+): void {
+  deps.interactionManager.transition({
+    expectedInput: "callback",
+    metadata: {
+      flow: "model-search",
+      stage: "results",
+      messageId,
+      query,
+      models: results.map((model) => ({
+        providerID: model.providerID,
+        modelID: model.modelID,
+        variant: "default",
+      })),
+    },
+  });
+}
+
+async function showModelSearchResultsAgain(
+  ctx: Context,
+  deps: ModelSelectionDeps,
+  meta: ModelSearchMetadata,
+): Promise<void> {
+  const results = await searchModels(meta.query);
+  const view = buildModelSearchResultsView(meta.query, results);
+
+  await ctx.answerCallbackQuery().catch(() => {});
+  await ctx.editMessageText(view.text, { reply_markup: view.keyboard });
+  transitionToModelSearchResults(deps, meta.query, meta.messageId, results);
+}
+
+// A model can leave OpenCode after the menu showing it was drawn. When the list cannot be
+// read the tap goes through as before.
+async function isModelStillOffered(modelInfo: ModelInfo): Promise<boolean> {
+  const availability = await getModelAvailability(modelInfo.providerID, modelInfo.modelID);
+  return availability === "offered" || availability === "unknown";
+}
+
+/**
+ * Redraw the screen a tap on a model OpenCode no longer offers came from, without a
+ * message: the model is gone from the current list.
+ */
+async function redrawAfterStaleModelTap(ctx: Context, redraw: () => Promise<void>): Promise<void> {
+  try {
+    await redraw();
+  } catch (err) {
+    logger.debug("[ModelHandler] Could not redraw the model menu after a stale tap:", err);
+    await ctx.answerCallbackQuery().catch(() => {});
+  }
 }
 
 /**
@@ -385,6 +512,11 @@ export async function handleModelSelect(ctx: Context, deps: ModelSelectionDeps):
       return true;
     }
 
+    if (!(await isModelStillOffered(resolvedModelInfo))) {
+      await redrawAfterStaleModelTap(ctx, () => showModelRootScreen(ctx, deps));
+      return true;
+    }
+
     clearActiveInlineMenu("model_selected", deps);
     await applyModelSelectionAndNotify(ctx, deps, resolvedModelInfo);
 
@@ -423,11 +555,7 @@ export async function handleModelProvidersCallback(
 
   try {
     if (data === MODEL_ROOT_CALLBACK) {
-      const modelLists = await getModelSelectionLists();
-      const view = await buildModelRootMenuView(fetchCurrentModel(), modelLists);
-
-      await renderModelMenuScreen(ctx, view);
-      updateModelMenuMetadata(deps, { modelLists });
+      await showModelRootScreen(ctx, deps);
       return true;
     }
 
@@ -450,26 +578,14 @@ export async function handleModelProvidersCallback(
         return true;
       }
 
-      const models = await getProviderModels(provider.id);
-      const view = buildProviderModelsMenuView(
+      await showProviderModelsScreen(
+        ctx,
+        deps,
+        meta,
         provider,
         providerCallback.providerIndex,
-        models,
         providerCallback.page,
-        meta.providersPage,
-        fetchCurrentModel(),
       );
-
-      await renderModelMenuScreen(ctx, view);
-      updateModelMenuMetadata(deps, {
-        providers: meta.providers,
-        providersPage: meta.providersPage,
-        models: view.pageModels.map((model) => ({
-          providerID: model.providerID,
-          modelID: model.modelID,
-          variant: "default",
-        })),
-      });
       return true;
     }
 
@@ -481,6 +597,24 @@ export async function handleModelProvidersCallback(
       if (!modelInfo) {
         logger.warn(`[ModelHandler] Unresolved provider model callback: ${data}`);
         await ctx.answerCallbackQuery({ text: t("model.change_error_callback") }).catch(() => {});
+        return true;
+      }
+
+      if (!(await isModelStillOffered(modelInfo))) {
+        const { providerIndex } = meta;
+        const provider = providerIndex === null ? undefined : meta.providers[providerIndex];
+        await redrawAfterStaleModelTap(ctx, () =>
+          provider && providerIndex !== null
+            ? showProviderModelsScreen(
+                ctx,
+                deps,
+                meta,
+                provider,
+                providerIndex,
+                meta.providerModelsPage,
+              )
+            : showModelRootScreen(ctx, deps),
+        );
         return true;
       }
 
@@ -565,39 +699,12 @@ export async function handleModelSearchTextInput(
 
   try {
     const results = await searchModels(text);
+    const view = buildModelSearchResultsView(text, results);
 
-    const keyboard = new InlineKeyboard();
-
-    for (const [index, model] of results.entries()) {
-      const label = `${model.providerID}/${model.modelID}`;
-      keyboard.text(label, `${MODEL_SEARCH_RESULT_CALLBACK_PREFIX}${index}`).row();
-    }
-
-    keyboard.row();
-    keyboard.text(t("model.search.search_again"), MODEL_SEARCH_AGAIN_CALLBACK);
-    keyboard.text(t("inline.button.cancel"), MODEL_SEARCH_CANCEL_CALLBACK);
-
-    const replyText =
-      results.length === 0
-        ? t("model.search.no_results", { query: text })
-        : t("model.search.results_title", { query: text });
-
-    const sent = await ctx.reply(replyText, { reply_markup: keyboard });
+    const sent = await ctx.reply(view.text, { reply_markup: view.keyboard });
 
     // Transition to results stage (callback-only)
-    deps.interactionManager.transition({
-      expectedInput: "callback",
-      metadata: {
-        flow: "model-search",
-        stage: "results",
-        messageId: sent.message_id,
-        models: results.map((model) => ({
-          providerID: model.providerID,
-          modelID: model.modelID,
-          variant: "default",
-        })),
-      },
-    });
+    transitionToModelSearchResults(deps, text, sent.message_id, results);
 
     return true;
   } catch (err) {
@@ -672,6 +779,11 @@ export async function handleModelSearchResults(
       return true;
     }
 
+    if (!(await isModelStillOffered(modelInfo))) {
+      await redrawAfterStaleModelTap(ctx, () => showModelSearchResultsAgain(ctx, deps, meta));
+      return true;
+    }
+
     deps.interactionManager.clear("model_search_selected");
     await applyModelSelectionAndNotify(ctx, deps, modelInfo);
     return true;
@@ -687,6 +799,11 @@ export async function handleModelSearchResults(
 
     const modelInfo = parseLegacyModelCallback(data);
     if (!modelInfo) {
+      return true;
+    }
+
+    if (!(await isModelStillOffered(modelInfo))) {
+      await redrawAfterStaleModelTap(ctx, () => showModelSearchResultsAgain(ctx, deps, meta));
       return true;
     }
 

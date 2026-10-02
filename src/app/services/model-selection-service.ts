@@ -22,6 +22,12 @@ interface ModelCatalogReadResult {
   isComplete: boolean;
 }
 
+/**
+ * Whether OpenCode offers a model: listed; its provider listed without it; its provider
+ * not listed after the bounded wait; or unknown, when the list could not be read.
+ */
+export type ModelAvailability = "offered" | "model-missing" | "provider-missing" | "unknown";
+
 export interface StoredModelReconcileResult {
   /** A fresh, non-empty catalog was read. */
   catalogAvailable: boolean;
@@ -125,6 +131,8 @@ function clearModelCatalogCache(): void {
  */
 export function startModelCatalogWarmup(): void {
   modelCatalogWarmupEndsAt = Date.now() + MODEL_CATALOG_WARMUP_MS;
+  // A list read before the start may name models the server no longer offers.
+  clearModelCatalogCache();
   // The server registers every provider again, so none of them counts as gone any more.
   providersPresumedGone.clear();
 }
@@ -301,6 +309,10 @@ async function readModelCatalog(options?: {
 
         providerModels.sort((a, b) => a.modelID.localeCompare(b.modelID));
         modelsByProvider.set(provider.id, providerModels);
+        if (providerModels.length === 0) {
+          continue;
+        }
+
         providers.push({
           id: provider.id,
           name: provider.name || provider.id,
@@ -329,8 +341,11 @@ async function readModelCatalog(options?: {
       cachedProviders = providers;
       cachedModelsByProvider = modelsByProvider;
       cachedCatalogComplete = isComplete;
-      // A list still missing expected providers is used for this read but asked again next time.
-      modelCatalogCacheExpiresAt = isComplete ? Date.now() + MODEL_CATALOG_CACHE_TTL_MS : 0;
+      // A list still missing expected providers, or read in the warm-up window, is used for
+      // this read but asked again next time: right after a start the server briefly lists
+      // models its config has not filtered out yet.
+      modelCatalogCacheExpiresAt =
+        isComplete && !isModelCatalogWarmupActive() ? Date.now() + MODEL_CATALOG_CACHE_TTL_MS : 0;
 
       if (isComplete) {
         logger.debug(
@@ -451,7 +466,7 @@ async function readOpenCodeModelState(): Promise<{
 
 /**
  * Get favorite and recent models from OpenCode local state file.
- * Config model is always treated as favorite.
+ * Config model is treated as favorite while OpenCode offers it.
  */
 export async function getModelSelectionLists(): Promise<ModelSelectionLists> {
   const envDefaultModel = getEnvDefaultModel();
@@ -462,15 +477,18 @@ export async function getModelSelectionLists(): Promise<ModelSelectionLists> {
       favorites: rawFavorites,
       recent: rawRecent,
     } = await readOpenCodeModelState();
-    const shouldValidateWithCatalog = rawFavorites.length > 0 || rawRecent.length > 0;
+    const shouldValidateWithCatalog =
+      rawFavorites.length > 0 || rawRecent.length > 0 || envDefaultModel !== null;
     const validModelKeys = shouldValidateWithCatalog ? await getValidModelKeys() : null;
 
     const validatedFavorites = filterModelsByCatalog(rawFavorites, validModelKeys);
     const validatedRecent = filterModelsByCatalog(rawRecent, validModelKeys);
+    const offeredDefaultModels = filterModelsByCatalog(
+      envDefaultModel ? [envDefaultModel] : [],
+      validModelKeys,
+    );
 
-    const favorites = envDefaultModel
-      ? dedupeModels([...validatedFavorites, envDefaultModel])
-      : validatedFavorites;
+    const favorites = dedupeModels([...validatedFavorites, ...offeredDefaultModels]);
 
     if (rawFavorites.length === 0 && envDefaultModel) {
       logger.info(
@@ -510,7 +528,7 @@ export async function getModelSelectionLists(): Promise<ModelSelectionLists> {
         err,
       );
       return {
-        favorites: [envDefaultModel],
+        favorites: filterModelsByCatalog([envDefaultModel], await getValidModelKeys()),
         recent: [],
       };
     }
@@ -579,6 +597,13 @@ export async function reconcileStoredModelSelection(options?: {
   }
 
   const fallbackKey = getModelKey(envDefaultModel.providerID, envDefaultModel.modelID);
+  if (!validModelKeys.has(fallbackKey)) {
+    logger.warn(
+      `[ModelManager] Stored model ${currentModelKey} is unavailable and config model ${fallbackKey} is not offered either; keeping it`,
+    );
+    return result;
+  }
+
   logger.warn(
     `[ModelManager] Stored model ${currentModelKey} is unavailable, falling back to ${fallbackKey}`,
   );
@@ -590,8 +615,90 @@ export async function reconcileStoredModelSelection(options?: {
   });
 
   result.storedModelReplaced = true;
-  result.selectedModelListed = validModelKeys.has(fallbackKey);
+  result.selectedModelListed = true;
   return result;
+}
+
+/**
+ * Check whether OpenCode offers one model, reading only its provider's list (with the
+ * bounded wait for that provider), so a missing provider never delays another one.
+ * A model found missing drops the cached catalog: whatever is drawn next is read afresh.
+ */
+export async function getModelAvailability(
+  providerID: string,
+  modelID: string,
+): Promise<ModelAvailability> {
+  const modelKey = getModelKey(providerID, modelID);
+  let response: ProvidersResponse;
+  try {
+    response = await readProvidersWhenListed(providerID);
+  } catch (err) {
+    logModelCatalogRefreshFailure(err, "exception");
+    return "unknown";
+  }
+
+  if (response.error || !response.data) {
+    logModelCatalogRefreshFailure(response.error, "error");
+    return "unknown";
+  }
+
+  const listedProviders = response.data.providers.filter(
+    (provider) => Object.keys(provider.models).length > 0,
+  );
+  if (listedProviders.length === 0) {
+    return "unknown";
+  }
+
+  const provider = listedProviders.find((entry) => entry.id === providerID);
+  const availability: ModelAvailability = !provider
+    ? "provider-missing"
+    : Object.hasOwn(provider.models, modelID)
+      ? "offered"
+      : "model-missing";
+
+  if (availability !== "offered") {
+    logger.info(`[ModelManager] Model ${modelKey} is not offered: ${availability}`);
+    clearModelCatalogCache();
+  }
+
+  return availability;
+}
+
+// In the warm-up window a provider not listed yet may still be registering; the read
+// after the window decides about it.
+async function isModelAdoptable(model: FavoriteModel): Promise<boolean> {
+  const availability = await getModelAvailability(model.providerID, model.modelID);
+  return (
+    availability === "offered" ||
+    availability === "unknown" ||
+    (availability === "provider-missing" && isModelCatalogWarmupActive())
+  );
+}
+
+/**
+ * Pick the model to store when a session or an agent brings one: the model itself while
+ * OpenCode offers it, otherwise the config model, otherwise none (leave the selection).
+ */
+export async function resolveModelToAdopt(model: FavoriteModel): Promise<FavoriteModel | null> {
+  if (await isModelAdoptable(model)) {
+    return model;
+  }
+
+  const modelKey = getModelKey(model.providerID, model.modelID);
+  const envDefaultModel = getEnvDefaultModel();
+  if (
+    envDefaultModel &&
+    getModelKey(envDefaultModel.providerID, envDefaultModel.modelID) !== modelKey &&
+    (await isModelAdoptable(envDefaultModel))
+  ) {
+    logger.info(
+      `[ModelManager] Model ${modelKey} is not offered, adopting the config model instead`,
+    );
+    return envDefaultModel;
+  }
+
+  logger.info(`[ModelManager] Model ${modelKey} is not offered, leaving the selection as it is`);
+  return null;
 }
 
 export function __resetModelCatalogCacheForTests(): void {

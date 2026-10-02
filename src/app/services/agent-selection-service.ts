@@ -1,7 +1,7 @@
 import { opencodeClient } from "../../opencode/client.js";
 import { getCurrentAgent, getCurrentProject, setCurrentAgent } from "../stores/settings-store.js";
 import { getCurrentSession } from "./session-service.js";
-import { getStoredModel, selectModel } from "./model-selection-service.js";
+import { getStoredModel, resolveModelToAdopt, selectModel } from "./model-selection-service.js";
 import { setCurrentVariant } from "./variant-selection-service.js";
 import { logger } from "../../utils/logger.js";
 import type { AgentInfo } from "../types/agent.js";
@@ -152,7 +152,8 @@ function configuredField(value: string | undefined): string | undefined {
 /**
  * Apply the listed agent's configured model and/or variant to current settings.
  * Independent fields: a missing or empty one is left as it is. Used only by the
- * agent picker — selectAgent itself stays a name write.
+ * agent picker — selectAgent itself stays a name write. A configured model OpenCode no
+ * longer offers is replaced by the config model, or not applied at all.
  * @returns true when a model or variant was written (so the pinned dashboard can follow)
  */
 export async function applyAgentConfiguredSettings(agentName: string): Promise<boolean> {
@@ -172,14 +173,24 @@ export async function applyAgentConfiguredSettings(agentName: string): Promise<b
     const hasModel = Boolean(providerID && modelID);
 
     if (hasModel && providerID && modelID) {
-      const storedVariant = variant ?? getStoredModel().variant ?? "default";
+      const adoptedModel = await resolveModelToAdopt({ providerID, modelID });
+      if (!adoptedModel) {
+        return false;
+      }
+
+      // The configured variant belongs to the configured model, not to the config model.
+      const isAgentModel =
+        adoptedModel.providerID === providerID && adoptedModel.modelID === modelID;
+      const storedVariant = isAgentModel
+        ? (variant ?? getStoredModel().variant ?? "default")
+        : "default";
       selectModel({
-        providerID,
-        modelID,
+        providerID: adoptedModel.providerID,
+        modelID: adoptedModel.modelID,
         variant: storedVariant,
       });
       logger.info(
-        `[AgentManager] Applied agent "${agentName}" model ${providerID}/${modelID} (${storedVariant})`,
+        `[AgentManager] Applied agent "${agentName}" model ${adoptedModel.providerID}/${adoptedModel.modelID} (${storedVariant})`,
       );
       return true;
     }

@@ -291,7 +291,7 @@ export async function handleMessagesCallback(
         setCurrentSession(sessionInfo);
         // Pull before attaching, so the pinned message rendered inside
         // attachToSession already carries the forked session's model.
-        applySessionSettings(forkedSession);
+        await applySessionSettings(forkedSession);
         deps.keyboardManager.updateAgent(getStoredAgent());
         deps.keyboardManager.updateModel(getStoredModel());
         deps.resetInteractions("session_forked");

@@ -173,6 +173,16 @@ Model picker behavior:
 - Favorites are shown first, recent models are shown after favorites
 - Models already present in favorites are not duplicated in recent
 - Default configured model (`OPENCODE_MODEL_PROVIDER` + `OPENCODE_MODEL_ID`) is treated as favorite
+  while OpenCode offers it
+- Only models OpenCode currently offers appear in favorites, recent, provider lists and search;
+  a provider with no models left is not listed. The bot hides the entry and leaves OpenCode's own
+  favorites and recent untouched, so a model shows up again once OpenCode offers it again
+- A tap on a model OpenCode no longer offers selects nothing and silently redraws the screen from
+  the current list
+- A selected model OpenCode no longer offers falls back to the configured model at the next server
+  start or `/reload` (in the first minute after a start it is kept until the minute ends); switching
+  to a session or picking an agent whose model is no longer offered selects the configured model
+  instead. When the configured model is not offered either, the selection stays as it is
 - Models can be browsed by provider: the picker offers a providers list and a paginated model
   list per provider, with a back button on each screen (page size: `MODELS_LIST_LIMIT`)
 - Picking a model opens the variant picker right after the confirmation when the model offers

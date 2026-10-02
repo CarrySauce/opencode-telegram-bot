@@ -10,6 +10,7 @@ const mocked = vi.hoisted(() => ({
   canStartLocalOpencodeServerMock: vi.fn(),
   explainFailedHealthCheckMock: vi.fn(),
   notifyReadyMock: vi.fn(),
+  notifyUnavailableMock: vi.fn(),
   editBotTextMock: vi.fn(),
   loggerDebugMock: vi.fn(),
   loggerInfoMock: vi.fn(),
@@ -75,7 +76,10 @@ function createContext(): Context {
 
 function createDeps() {
   return createTestAppContainer({
-    opencodeReadyLifecycle: { notifyReady: mocked.notifyReadyMock } as never,
+    opencodeReadyLifecycle: {
+      notifyReady: mocked.notifyReadyMock,
+      notifyUnavailable: mocked.notifyUnavailableMock,
+    } as never,
   });
 }
 
@@ -90,6 +94,7 @@ function createChildProcess(pid: number): ChildProcess {
 describe("bot/commands/opencode-start-command", () => {
   beforeEach(() => {
     mocked.healthMock.mockReset();
+    mocked.notifyUnavailableMock.mockReset();
     mocked.resolveLocalOpencodeTargetMock.mockReset();
     mocked.startLocalOpencodeServerMock.mockReset();
     mocked.canStartLocalOpencodeServerMock.mockReset();
@@ -175,6 +180,21 @@ describe("bot/commands/opencode-start-command", () => {
       }),
     );
     expect(mocked.notifyReadyMock).toHaveBeenCalledWith("opencode_start_success");
+  });
+
+  it("marks the server unavailable before starting it, so the start runs the ready refresh", async () => {
+    const ctx = createContext();
+    mocked.startLocalOpencodeServerMock.mockReturnValue(createChildProcess(123));
+    mocked.healthMock
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue({ data: { healthy: true, version: "1.2.3" }, error: null });
+
+    await opencodeStartCommand(ctx as never, createDeps());
+
+    expect(mocked.notifyUnavailableMock).toHaveBeenCalledWith("opencode_start_not_running");
+    const unavailableOrder = mocked.notifyUnavailableMock.mock.invocationCallOrder[0] ?? 0;
+    const readyOrder = mocked.notifyReadyMock.mock.invocationCallOrder[0] ?? 0;
+    expect(unavailableOrder).toBeLessThan(readyOrder);
   });
 
   it("replies with the generic start failure and starts nothing when a start is refused", async () => {
