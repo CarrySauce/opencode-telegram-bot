@@ -252,6 +252,46 @@ describe("opencode/v2/events", () => {
     expect(result[1]).toMatchObject({ properties: { part: { text: "hello" } } });
   });
 
+  describe("inbox items kept across subscriptions", () => {
+    const enqueued = event("session.inbox.enqueued", {
+      sessionID: SESSION,
+      inboxID: "msg-user",
+      item: { type: "user", payload: { text: "hello" }, delivery: "steer" },
+    });
+    const delivered = event("session.inbox.delivered", { sessionID: SESSION, inboxID: "msg-user" });
+
+    it("shows a prompt queued on one subscription and delivered on the next as a user message", () => {
+      const inbox = new Map();
+      payloads(createV2EventTranslator({ inbox }), [enqueued]);
+
+      const result = payloads(createV2EventTranslator({ inbox }), [delivered]);
+
+      expect(result.map((item) => item.type)).toEqual(["message.updated", "message.part.updated"]);
+      expect(result[0]).toMatchObject({ properties: { info: { id: "msg-user", role: "user" } } });
+      expect(result[1]).toMatchObject({ properties: { part: { text: "hello" } } });
+      expect(inbox.size).toBe(0);
+    });
+
+    it("forgets a cancelled prompt", () => {
+      const inbox = new Map();
+      const translate = createV2EventTranslator({ inbox });
+
+      payloads(translate, [
+        enqueued,
+        event("session.inbox.cancelled", { sessionID: SESSION, inboxID: "msg-user" }),
+      ]);
+
+      expect(inbox.size).toBe(0);
+      expect(payloads(translate, [delivered])).toEqual([]);
+    });
+
+    it("keeps the items to one subscription when none are passed in", () => {
+      payloads(createV2EventTranslator(), [enqueued]);
+
+      expect(payloads(createV2EventTranslator(), [delivered])).toEqual([]);
+    });
+  });
+
   it("turns V2 permissions and forms into V1 permission and question events", () => {
     const onForm = vi.fn();
     const translate = createV2EventTranslator({ onForm });

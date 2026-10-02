@@ -401,6 +401,61 @@ describe("opencode/v2/client", () => {
     expect(projectEvents).toEqual(["server.connected", "session.status"]);
   });
 
+  it("shows the pickup of a prompt queued before the event stream reconnected", async () => {
+    const located = { location: { directory: "D:/repo" } };
+    fake.client.event.subscribe
+      .mockImplementationOnce(() =>
+        (async function* () {
+          yield { id: "evt-1", type: "server.connected", data: {} };
+          yield {
+            id: "evt-2",
+            type: "session.inbox.enqueued",
+            data: {
+              sessionID: "ses-1",
+              inboxID: "msg-user",
+              item: { type: "user", payload: { text: "hello" }, delivery: "steer" },
+            },
+            ...located,
+          };
+        })(),
+      )
+      .mockImplementationOnce(() =>
+        (async function* () {
+          yield { id: "evt-3", type: "server.connected", data: {} };
+          yield {
+            id: "evt-4",
+            type: "session.inbox.delivered",
+            data: { sessionID: "ses-1", inboxID: "msg-user" },
+            ...located,
+          };
+        })(),
+      );
+    const client = createClient() as unknown as {
+      global: {
+        event: () => Promise<{ stream: AsyncIterable<{ payload: { type: string } }> }>;
+      };
+    };
+    const read = async () => {
+      const events = [];
+      for await (const envelope of (await client.global.event()).stream) {
+        events.push(envelope.payload);
+      }
+      return events;
+    };
+
+    await read();
+    const afterReconnect = await read();
+
+    expect(afterReconnect.map((item) => item.type)).toEqual([
+      "server.connected",
+      "message.updated",
+      "message.part.updated",
+    ]);
+    expect(afterReconnect[1]).toMatchObject({
+      properties: { info: { id: "msg-user", role: "user" } },
+    });
+  });
+
   describe("server restart mark", () => {
     type ConnectClient = {
       global: {

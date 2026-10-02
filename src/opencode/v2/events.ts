@@ -66,11 +66,15 @@ interface SessionState {
 export interface V2EventTranslatorOptions {
   /** Receives every form the stream announces, so replies can map answers back. */
   onForm?: (form: FormInfo) => void;
+  /** Inbox items announced so far, kept by the caller across subscriptions. */
+  inbox?: Map<string, SessionInboxItem>;
 }
 
 /**
  * Translates the V2 event stream into the V1 events the bot consumes. One translator
- * belongs to one subscription, so partial state never leaks across reconnects.
+ * belongs to one subscription, so partial state never leaks across reconnects. Inbox
+ * items are the exception when the caller passes them in: a message queued before a
+ * reconnect is delivered on the next subscription, and its pickup needs the item.
  */
 export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) {
   const sessions = new Map<string, SessionState>();
@@ -78,7 +82,7 @@ export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) 
   const tools = new Map<string, ToolCallState>();
   // Keyed by what announces the real end: `shell:<shell id>` or `session:<child session id>`.
   const backgroundCalls = new Map<string, BackgroundCallState>();
-  const inbox = new Map<string, SessionInboxItem>();
+  const inbox = options.inbox ?? new Map<string, SessionInboxItem>();
 
   const rememberDirectory = (sessionID: string, directory: string | undefined) => {
     if (!directory) {
@@ -368,6 +372,10 @@ export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) 
 
       case "session.inbox.enqueued":
         inbox.set(event.data.inboxID, event.data.item);
+        return [];
+
+      case "session.inbox.cancelled":
+        inbox.delete(event.data.inboxID);
         return [];
 
       case "session.inbox.delivered": {

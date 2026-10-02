@@ -4,6 +4,7 @@ import { config } from "../../config.js";
 import { opencodeServerVersion } from "../../opencode/client.js";
 import { getCurrentSession } from "../../app/services/session-service.js";
 import { restorePendingInteractionsAfterReconnect } from "../../app/services/attach-service.js";
+import { reconcileInboxPrompts } from "../../app/services/prompt-inbox-service.js";
 import { logger } from "../../utils/logger.js";
 import { clearPromptResponseMode } from "../handlers/prompt.js";
 import { setPromptResponseModeClearerForReconciliation } from "../../app/services/busy-reconciliation-service.js";
@@ -259,6 +260,15 @@ class EventSubscriptionService implements BotEventSubscriptionService {
       this.stopBackgroundOperations("event_stream_reconnect");
       // An idle missed in the gap must not time a later turn from this one.
       this.deps.summaryAggregator.forgetLiveTurn();
+    }
+
+    // A pickup or cancel of a waiting message in the gap was missed with the other events.
+    const session = getCurrentSession();
+    if (session) {
+      logger.debug(`[Bot] Reconciling the session inbox after reconnect: session=${session.id}`);
+      reconcileInboxPrompts(session.id).catch((error) => {
+        logger.warn("[Bot] Failed to reconcile the session inbox after reconnect:", error);
+      });
     }
 
     const bot = this.botInstance;

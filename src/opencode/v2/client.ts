@@ -1,5 +1,10 @@
 import type { Event, FilePartInput, OpencodeClient, TextPartInput } from "@opencode-ai/sdk/v2";
-import { OpenCode, type FormInfo, type OpenCodeClient } from "@opencode/client";
+import {
+  OpenCode,
+  type FormInfo,
+  type OpenCodeClient,
+  type SessionInboxItem,
+} from "@opencode/client";
 import { Service } from "@opencode/client/service";
 import { createV2EventTranslator, type V1GlobalEvent } from "./events.js";
 import {
@@ -143,6 +148,8 @@ export function createV2OpencodeClient(options: V2ClientOptions): OpencodeClient
   // both are learned from the lists and the event stream.
   const forms = new Map<string, FormInfo>();
   const permissionSessions = new Map<string, string>();
+  // A message queued before the event stream reconnected is delivered on the new stream.
+  const inboxItems = new Map<string, SessionInboxItem>();
 
   const rememberForm = (form: FormInfo) => {
     forms.set(form.id, form);
@@ -310,6 +317,7 @@ export function createV2OpencodeClient(options: V2ClientOptions): OpencodeClient
   function translatedStream(signal?: AbortSignal): AsyncGenerator<V1GlobalEvent> {
     const translate = createV2EventTranslator({
       onForm: rememberForm,
+      inbox: inboxItems,
     });
     const queue: V1GlobalEvent[] = [];
     let wake: (() => void) | null = null;
