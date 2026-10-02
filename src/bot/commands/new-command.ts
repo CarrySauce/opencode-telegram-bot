@@ -16,6 +16,7 @@ import { logger } from "../../utils/logger.js";
 import { t } from "../../i18n/index.js";
 import { formatSessionTitle } from "../../app/formatters/session-title-formatter.js";
 import { attachToSession } from "../../app/services/attach-service.js";
+import { getMissingFolderNotice } from "../../app/services/missing-folder-notice-service.js";
 
 export type NewCommandDeps = Pick<
   AppContainer,
@@ -43,6 +44,12 @@ export async function newCommand(ctx: CommandContext<Context>, deps: NewCommandD
 
     if (!currentProject) {
       await ctx.reply(t("new.project_not_selected"));
+      return;
+    }
+
+    const folderNotice = await getMissingFolderNotice(currentProject.worktree);
+    if (folderNotice) {
+      await ctx.reply(folderNotice);
       return;
     }
 

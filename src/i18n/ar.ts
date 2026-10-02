@@ -94,6 +94,10 @@ export const ar: I18nDictionary = {
   "bot.session_reset_project_mismatch":
     "⚠️ الجلسة النشطة مرتبطة بمشروع مختلف، لذلك تمت إعادة ضبطها. استخدم /sessions لاختيار جلسة أو /new لبدء جلسة جديدة.",
   "bot.prompt_send_error": "تعذر إرسال الطلب إلى OpenCode.",
+  "bot.project_folder_missing":
+    "🚫 The project folder no longer exists: {path}. Choose another project in /projects.",
+  "bot.project_folder_missing_worktree":
+    "🚫 The project folder no longer exists: {path}. Choose another worktree in /worktree.",
   "bot.session_error": "🔴 أعاد OpenCode الخطأ التالي: {message}",
   "bot.assistant_reply_undelivered":
     "⚠️ The last assistant reply could not be delivered. Send your message again if you still need it.",
@@ -546,6 +550,7 @@ export const ar: I18nDictionary = {
   "task.kind.once": "لمرة واحدة",
   "task.run.success": "⏰ اكتملت المهمة المجدولة: {description}",
   "task.run.error": "🔴 فشلت المهمة المجدولة: {description}\n\nالخطأ: {error}",
+  "task.run.error.folder_missing": "The project folder no longer exists: {path}",
   "task.run.error.interactive_question":
     "طلبت المهمة المجدولة سؤالًا تفاعليًا ولا يمكنها المتابعة دون تدخل المستخدم.",
   "task.run.error.interactive_permission":

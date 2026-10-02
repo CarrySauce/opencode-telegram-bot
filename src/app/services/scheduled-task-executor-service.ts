@@ -3,6 +3,7 @@ import { t } from "../../i18n/index.js";
 import { opencodeClient } from "../../opencode/client.js";
 import { logger } from "../../utils/logger.js";
 import { extractErrorMessage } from "../../utils/opencode-error.js";
+import { checkFolderPresence } from "./folder-presence-service.js";
 import {
   cleanupScheduledTaskSessionIgnores,
   registerScheduledTaskSessionIgnore,
@@ -503,6 +504,10 @@ export async function executeScheduledTask(
 
   try {
     await cleanupScheduledTaskSessionIgnores();
+
+    if ((await checkFolderPresence(task.projectWorktree)) === "missing") {
+      throw new Error(t("task.run.error.folder_missing", { path: task.projectWorktree }));
+    }
 
     const { data: session, error: createError } = await opencodeClient.session.create({
       directory: task.projectWorktree,

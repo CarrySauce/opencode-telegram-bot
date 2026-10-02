@@ -90,6 +90,10 @@ export const ru: I18nDictionary = {
   "bot.session_reset_project_mismatch":
     "⚠️ Активная сессия не соответствует выбранному проекту, поэтому была сброшена. Используйте /sessions для выбора или /new для создания новой сессии.",
   "bot.prompt_send_error": "Не удалось отправить запрос в OpenCode.",
+  "bot.project_folder_missing":
+    "🚫 Папка проекта больше не существует: {path}. Выберите другой проект в /projects.",
+  "bot.project_folder_missing_worktree":
+    "🚫 Папка проекта больше не существует: {path}. Выберите другой worktree в /worktree.",
   "bot.session_error": "🔴 OpenCode вернул ошибку: {message}",
   "bot.assistant_reply_undelivered":
     "⚠️ Последний ответ ассистента не удалось доставить. Отправьте сообщение ещё раз, если оно ещё нужно.",
@@ -563,6 +567,7 @@ export const ru: I18nDictionary = {
   "task.kind.once": "однократная",
   "task.run.success": "⏰ Задача по расписанию выполнена: {description}",
   "task.run.error": "🔴 Ошибка выполнения задачи по расписанию: {description}\n\nОшибка: {error}",
+  "task.run.error.folder_missing": "Папка проекта больше не существует: {path}",
   "task.run.error.interactive_question":
     "Задача по расписанию задала интерактивный вопрос и не может продолжить выполнение без участия пользователя.",
   "task.run.error.interactive_permission":

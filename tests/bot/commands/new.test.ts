@@ -10,6 +10,11 @@ const mocked = vi.hoisted(() => ({
   getCurrentProjectMock: vi.fn(),
   attachToSessionMock: vi.fn(),
   ensureEventSubscriptionMock: vi.fn(),
+  getMissingFolderNoticeMock: vi.fn(),
+}));
+
+vi.mock("../../../src/app/services/missing-folder-notice-service.js", () => ({
+  getMissingFolderNotice: mocked.getMissingFolderNoticeMock,
 }));
 
 vi.mock("../../../src/opencode/client.js", () => ({
@@ -95,6 +100,19 @@ describe("bot/commands/new", () => {
     });
     mocked.ensureEventSubscriptionMock.mockReset();
     mocked.getCurrentProjectMock.mockReturnValue({ id: "project-1", worktree: "/repo" });
+    mocked.getMissingFolderNoticeMock.mockReset().mockResolvedValue(null);
+  });
+
+  it("answers with the folder notice and creates nothing when the project folder is gone", async () => {
+    mocked.getMissingFolderNoticeMock.mockResolvedValue("folder gone notice");
+
+    const ctx = createContext();
+    await newCommand(ctx as never, createDeps());
+
+    expect(mocked.getMissingFolderNoticeMock).toHaveBeenCalledWith("/repo");
+    expect(ctx.reply).toHaveBeenCalledWith("folder gone notice");
+    expect(mocked.sessionCreateMock).not.toHaveBeenCalled();
+    expect(mocked.attachToSessionMock).not.toHaveBeenCalled();
   });
 
   it("blocks new session creation while foreground session is busy", async () => {

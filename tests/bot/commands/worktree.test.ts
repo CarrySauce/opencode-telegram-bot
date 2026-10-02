@@ -9,6 +9,7 @@ const mocked = vi.hoisted(() => ({
     name?: string;
   } | null,
   getGitWorktreeContextMock: vi.fn(),
+  missingWorktreePaths: new Set<string>(),
   replyWithInlineMenuMock: vi.fn(),
   ensureActiveInlineMenuMock: vi.fn().mockResolvedValue(true),
   isForegroundBusyMock: vi.fn(() => false),
@@ -24,7 +25,12 @@ vi.mock("../../../src/app/stores/settings-store.js", () => ({
 }));
 
 vi.mock("../../../src/app/services/worktree-service.js", () => ({
-  getGitWorktreeContext: mocked.getGitWorktreeContextMock,
+  getCurrentFolderWorktreeContext: mocked.getGitWorktreeContextMock,
+  listPresentWorktrees: vi.fn(async (worktrees: Array<{ path: string }>) =>
+    worktrees
+      .map((entry, gitIndex) => ({ entry, gitIndex }))
+      .filter(({ entry }) => !mocked.missingWorktreePaths.has(entry.path)),
+  ),
 }));
 
 vi.mock("../../../src/bot/menus/inline-menu.js", () => ({
@@ -98,6 +104,7 @@ describe("bot/commands/worktree", () => {
   beforeEach(() => {
     mocked.currentProject = { id: "project-1", worktree: "/repo", name: "Repo" };
     mocked.getGitWorktreeContextMock.mockReset();
+    mocked.missingWorktreePaths = new Set();
     mocked.replyWithInlineMenuMock.mockReset();
     mocked.ensureActiveInlineMenuMock.mockReset().mockResolvedValue(true);
     mocked.isForegroundBusyMock.mockReset().mockReturnValue(false);
@@ -160,6 +167,48 @@ describe("bot/commands/worktree", () => {
     };
     expect(keyboard.inline_keyboard[0]?.[0]?.text).toContain("1. repo [/repo]");
     expect(keyboard.inline_keyboard[1]?.[0]?.text).toContain("2. repo-feature [/repo-feature]");
+  });
+
+  it("leaves out a worktree whose folder is gone, keeping each button on its git row", async () => {
+    mocked.getGitWorktreeContextMock.mockResolvedValue({
+      mainProjectPath: "/repo",
+      activeWorktreePath: "/repo",
+      branch: "main",
+      isLinkedWorktree: false,
+      worktrees: [
+        { path: "/repo", branch: "main", isCurrent: true, isMain: true },
+        { path: "/repo-gone", branch: "feature/gone", isCurrent: false, isMain: false },
+        { path: "/repo-feature", branch: "feature/chat", isCurrent: false, isMain: false },
+      ],
+    });
+    mocked.missingWorktreePaths = new Set(["/repo-gone"]);
+
+    const ctx = createCommandContext();
+    await worktreeCommand(ctx as never, createDeps());
+
+    const keyboard = mocked.replyWithInlineMenuMock.mock.calls[0]?.[1]?.keyboard as {
+      inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+    };
+    expect(keyboard.inline_keyboard.flat()).toHaveLength(2);
+    expect(keyboard.inline_keyboard[1]?.[0]?.text).toContain("2. repo-feature [/repo-feature]");
+    expect(keyboard.inline_keyboard[1]?.[0]?.callback_data).toBe("worktree:2");
+  });
+
+  it("shows the empty state when every worktree folder is gone", async () => {
+    mocked.getGitWorktreeContextMock.mockResolvedValue({
+      mainProjectPath: "/repo",
+      activeWorktreePath: "/repo",
+      branch: "main",
+      isLinkedWorktree: false,
+      worktrees: [{ path: "/repo", branch: "main", isCurrent: true, isMain: true }],
+    });
+    mocked.missingWorktreePaths = new Set(["/repo"]);
+
+    const ctx = createCommandContext();
+    await worktreeCommand(ctx as never, createDeps());
+
+    expect(ctx.reply).toHaveBeenCalledWith(t("worktree.empty"));
+    expect(mocked.replyWithInlineMenuMock).not.toHaveBeenCalled();
   });
 
   it("switches to a selected linked worktree and resets the session", async () => {

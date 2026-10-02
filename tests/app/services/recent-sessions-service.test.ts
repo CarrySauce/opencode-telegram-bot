@@ -4,8 +4,9 @@ import { loadRecentSessions } from "../../../src/app/services/recent-sessions-se
 const mocked = vi.hoisted(() => ({
   list: vi.fn(), get: vi.fn(), status: vi.fn(), questions: vi.fn(), permissions: vi.fn(),
   attached: null as { id: string; directory: string } | null, warn: vi.fn(),
+  fileList: vi.fn(), missing: new Set<string>(),
 }));
-vi.mock("../../../src/opencode/client.js", () => ({ opencodeClient: {
+vi.mock("../../../src/opencode/client.js", () => ({ opencodeServerVersion: "v2", opencodeV2Client: { file: { list: mocked.fileList } }, opencodeClient: {
   experimental: { session: { list: mocked.list } },
   session: { get: mocked.get, status: mocked.status },
   question: { list: mocked.questions }, permission: { list: mocked.permissions },
@@ -25,6 +26,47 @@ describe("cross-project recent session snapshot", () => {
     mocked.questions.mockResolvedValue({ data: [], error: null });
     mocked.permissions.mockResolvedValue({ data: [], error: null });
     mocked.status.mockResolvedValue({ data: {}, error: null });
+    // A folder in `missing` fails its own listing with a 500 and is absent from its parent's.
+    mocked.missing = new Set();
+    mocked.fileList.mockReset().mockImplementation(async ({ path }: { path: string }) => mocked.missing.has(path)
+      ? { data: undefined, error: Object.assign(new Error("500"), { name: "ClientError", reason: "UnexpectedStatus", cause: { status: 500 } }) }
+      : { data: [], error: undefined });
+  });
+
+  it("leaves out sessions whose folder is gone without letting them take places", async () => {
+    mocked.missing = new Set(["/gone"]);
+    const all = [session("g1", "/gone", 5), session("a", "/one", 4), session("g2", "/gone", 3), session("b", "/one", 2), session("c", "/two", 1)];
+    mocked.list.mockImplementation(async ({ limit }: { limit: number }) => ({ data: all.slice(0, limit), error: null }));
+
+    const rows = await loadRecentSessions(3);
+
+    expect(rows.map(({ session }) => session.id)).toEqual(["a", "b", "c"]);
+    expect(mocked.status).not.toHaveBeenCalledWith({ directory: "/gone" });
+  });
+
+  it("hides a session of a deleted worktree while the main project's sessions stay", async () => {
+    mocked.missing = new Set(["/repo-feature"]);
+    mocked.list.mockResolvedValue({ data: [session("wt", "/repo-feature", 2), session("main", "/repo", 1)], error: null });
+
+    expect((await loadRecentSessions(10)).map(({ session }) => session.id)).toEqual(["main"]);
+  });
+
+  it("does not retain the attached session when its folder is gone", async () => {
+    mocked.missing = new Set(["/old"]);
+    mocked.attached = { id: "old", directory: "/old" };
+    mocked.list.mockResolvedValue({ data: [session("new", "/new", 10), session("next", "/new", 9)], error: null });
+    mocked.get.mockResolvedValue({ data: session("old", "/old", 1), error: null });
+
+    expect((await loadRecentSessions(2)).map(({ session }) => session.id)).toEqual(["new", "next"]);
+  });
+
+  it("keeps a session whose folder fails to answer but is still listed by its parent", async () => {
+    mocked.fileList.mockImplementation(async ({ path }: { path: string }) => path === "/flaky"
+      ? { data: undefined, error: Object.assign(new Error("500"), { name: "ClientError", reason: "UnexpectedStatus", cause: { status: 500 } }) }
+      : { data: path === "/" ? ["flaky/"] : [], error: undefined });
+    mocked.list.mockResolvedValue({ data: [session("f", "/flaky", 1)], error: null });
+
+    expect((await loadRecentSessions(10)).map(({ session }) => session.id)).toEqual(["f"]);
   });
 
   it("queries global root sessions and snapshots each directory with status precedence", async () => {

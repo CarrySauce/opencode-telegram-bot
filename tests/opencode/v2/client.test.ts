@@ -24,6 +24,7 @@ const fake = vi.hoisted(() => ({
     permission: { request: { list: vi.fn() }, reply: vi.fn() },
     event: { subscribe: vi.fn() },
     location: { reload: vi.fn() },
+    file: { list: vi.fn() },
   },
 }));
 
@@ -231,6 +232,36 @@ describe("opencode/v2/client", () => {
 
     expect(result).toEqual({ data: true, error: undefined });
     expect(fake.client.location.reload).toHaveBeenCalledOnce();
+  });
+
+  it("lists a folder through the server without loading a location for it", async () => {
+    fake.client.file.list.mockResolvedValue({
+      location: { directory: "D:/repo" },
+      data: [
+        { path: "..\\app\\", type: "directory" },
+        { path: "README.md", type: "file" },
+      ],
+    });
+    const client = createClient() as unknown as V2ClientExtension;
+
+    const result = await client.file.list({ path: "D:\\Projects" });
+
+    expect(result).toEqual({ data: ["..\\app\\", "README.md"], error: undefined });
+    expect(fake.client.file.list).toHaveBeenCalledWith({ path: "D:\\Projects" });
+  });
+
+  it("passes a failed folder listing through with its status", async () => {
+    const error = Object.assign(new Error("500"), {
+      name: "ClientError",
+      reason: "UnexpectedStatus",
+      cause: { status: 500 },
+    });
+    fake.client.file.list.mockRejectedValue(error);
+    const client = createClient() as unknown as V2ClientExtension;
+
+    const result = await client.file.list({ path: "D:\\Gone" });
+
+    expect(result).toEqual({ data: undefined, error });
   });
 
   it("reports a rejected reload as the call's error", async () => {

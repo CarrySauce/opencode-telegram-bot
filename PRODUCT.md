@@ -156,6 +156,8 @@ Current command set:
 
 Model, agent, variant, and context actions are available from the persistent bottom keyboard. The context button opens window usage and the latest assistant message's token breakdown and cost when a session is idle; its inline controls close the details or open a separate compaction confirmation.
 
+On OpenCode V2, sessions, projects and worktrees whose folder the server reports as no longer existing are left out of `/recent`, `/sessions`, `/projects` and `/worktree`. A current project in such a folder stays selected and named in `/status` and the pinned message; a prompt, `/new` or `/task` there answers that the folder is gone and points to `/projects` (or to `/worktree` for a worktree whose main repository still exists, where `/worktree` then lists that repository's worktrees) instead of reaching OpenCode. A scheduled task in such a folder fails each run with that reason and stays in the list.
+
 Text messages (non-commands) are treated as prompts for OpenCode only when no blocking interaction is active. Voice/audio messages are transcribed and then sent as prompts when STT is configured. When TTS mode in `/settings` is set to `all`, completed assistant replies include a generated audio file if TTS is configured. When it is set to `auto`, audio replies are sent only after voice/audio prompts.
 
 Interaction routing rules:
@@ -202,6 +204,7 @@ Agent picker behavior:
 - [x] OpenCode V2 set up and started out of the box: the setup wizard asks for the version and the V2 password, and `/opencode_start`, `/opencode_stop` and auto-restart manage the V2 background server
 - [x] Project and session management from Telegram (`/projects`, `/worktree`, `/sessions`, `/new`)
 - [x] Cross-project recent sessions with status and direct attachment (`/recent`)
+- [x] Sessions, projects and worktrees from folders that no longer exist hidden from the lists, with a notice instead of a failed send there (OpenCode V2)
 - [x] Automatic tracking of the current OpenCode CLI session, including continuing it from Telegram, live updates, and external text input notifications
 - [x] Remote task execution, interruption, and local detachment support (`/abort`, `/detach`)
 - [x] Background notifications for detached/non-current sessions in the currently selected project/worktree

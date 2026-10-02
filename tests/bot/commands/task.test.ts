@@ -22,6 +22,11 @@ const mocked = vi.hoisted(() => ({
   addScheduledTaskMock: vi.fn(),
   listScheduledTasksMock: vi.fn(),
   registerTaskMock: vi.fn(),
+  getMissingFolderNoticeMock: vi.fn(),
+}));
+
+vi.mock("../../../src/app/services/missing-folder-notice-service.js", () => ({
+  getMissingFolderNotice: mocked.getMissingFolderNoticeMock,
 }));
 
 vi.mock("../../../src/config.js", () => ({
@@ -156,6 +161,7 @@ describe("bot/commands/task", () => {
     mocked.addScheduledTaskMock.mockReset();
     mocked.listScheduledTasksMock.mockReset();
     mocked.registerTaskMock.mockReset();
+    mocked.getMissingFolderNoticeMock.mockReset().mockResolvedValue(null);
     mocked.taskLimit = 10;
     mocked.addScheduledTaskMock.mockResolvedValue(undefined);
     mocked.listScheduledTasksMock.mockReturnValue([]);
@@ -187,6 +193,18 @@ describe("bot/commands/task", () => {
         projectWorktree: "D:\\Projects\\Repo",
       },
     });
+  });
+
+  it("answers with the folder notice and starts nothing when the project folder is gone", async () => {
+    mocked.getMissingFolderNoticeMock.mockResolvedValue("folder gone notice");
+    const ctx = createCommandContext();
+
+    await taskCommand(ctx as never, createDeps());
+
+    expect(mocked.getMissingFolderNoticeMock).toHaveBeenCalledWith("D:\\Projects\\Repo");
+    expect(ctx.reply).toHaveBeenCalledWith("folder gone notice");
+    expect(container.taskCreationManager.isActive()).toBe(false);
+    expect(container.interactionManager.getSnapshot()).toBeNull();
   });
 
   it("does not start flow when task limit is reached", async () => {

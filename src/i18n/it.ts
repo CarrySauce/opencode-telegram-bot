@@ -96,6 +96,10 @@ export const it: I18nDictionary = {
   "bot.session_reset_project_mismatch":
     "⚠️ La sessione attiva non corrisponde al progetto selezionato, quindi è stata reimpostata. Usa /sessions per sceglierne una o /new per crearne una nuova.",
   "bot.prompt_send_error": "Invio della richiesta a OpenCode non riuscito.",
+  "bot.project_folder_missing":
+    "🚫 The project folder no longer exists: {path}. Choose another project in /projects.",
+  "bot.project_folder_missing_worktree":
+    "🚫 The project folder no longer exists: {path}. Choose another worktree in /worktree.",
   "bot.session_error": "🔴 OpenCode ha restituito un errore: {message}",
   "bot.assistant_reply_undelivered":
     "⚠️ The last assistant reply could not be delivered. Send your message again if you still need it.",
@@ -573,6 +577,7 @@ export const it: I18nDictionary = {
   "task.kind.once": "una tantum",
   "task.run.success": "⏰ Attività pianificata completata: {description}",
   "task.run.error": "🔴 Attività pianificata non riuscita: {description}\n\nErrore: {error}",
+  "task.run.error.folder_missing": "The project folder no longer exists: {path}",
   "task.run.error.interactive_question":
     "L'attività pianificata ha richiesto una domanda interattiva e non può proseguire senza supervisione.",
   "task.run.error.interactive_permission":

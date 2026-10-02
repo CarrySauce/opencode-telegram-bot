@@ -98,6 +98,10 @@ export const id: I18nDictionary = {
   "bot.session_reset_project_mismatch":
     "⚠️ Sesi aktif tidak cocok dengan proyek yang dipilih, jadi sesi direset. Gunakan /sessions untuk memilih atau /new untuk membuat sesi baru.",
   "bot.prompt_send_error": "Gagal mengirim prompt ke OpenCode.",
+  "bot.project_folder_missing":
+    "🚫 The project folder no longer exists: {path}. Choose another project in /projects.",
+  "bot.project_folder_missing_worktree":
+    "🚫 The project folder no longer exists: {path}. Choose another worktree in /worktree.",
   "bot.session_error": "🔴 OpenCode mengembalikan kesalahan: {message}",
   "bot.assistant_reply_undelivered":
     "⚠️ Balasan terakhir dari asisten tidak berhasil dikirim. Kirim ulang pesanmu jika masih membutuhkannya.",
@@ -558,6 +562,7 @@ export const id: I18nDictionary = {
   "task.kind.once": "sekali",
   "task.run.success": "⏰ Tugas terjadwal selesai: {description}",
   "task.run.error": "🔴 Tugas terjadwal gagal: {description}\n\nKesalahan: {error}",
+  "task.run.error.folder_missing": "The project folder no longer exists: {path}",
   "task.run.error.interactive_question":
     "Tugas terjadwal meminta pertanyaan interaktif, jadi tidak bisa lanjut tanpa pengawasan.",
   "task.run.error.interactive_permission":

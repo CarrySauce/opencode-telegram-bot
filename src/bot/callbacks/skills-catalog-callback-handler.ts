@@ -170,7 +170,10 @@ export async function executeSkill(
   await ctx.reply(executingMessage.text, { entities: executingMessage.entities });
 
   const promptText = args ? `/${params.skillName} ${args}` : `/${params.skillName}`;
-  await processUserPrompt(ctx, createIncomingPrompt(promptText), deps);
+  // Running a skill stays as it was in a project folder that no longer exists.
+  await processUserPrompt(ctx, createIncomingPrompt(promptText), deps, {
+    skipProjectFolderCheck: true,
+  });
 }
 
 export async function handleSkillsCallback(

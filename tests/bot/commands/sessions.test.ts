@@ -19,6 +19,7 @@ const mocked = vi.hoisted(() => ({
     worktree: "/repo",
   } as { id: string; worktree: string; name?: string } | null,
   sessionListMock: vi.fn(),
+  fileListMock: vi.fn(),
   sessionGetMock: vi.fn(),
   sessionMessagesMock: vi.fn(),
   sessionStatusMock: vi.fn(),
@@ -43,6 +44,8 @@ const mocked = vi.hoisted(() => ({
 }));
 
 vi.mock("../../../src/opencode/client.js", () => ({
+  opencodeServerVersion: "v2",
+  opencodeV2Client: { file: { list: mocked.fileListMock } },
   opencodeClient: {
     session: {
       list: mocked.sessionListMock,
@@ -212,6 +215,7 @@ describe("bot/commands/sessions", () => {
     };
 
     mocked.sessionListMock.mockReset();
+    mocked.fileListMock.mockReset().mockResolvedValue({ data: [], error: undefined });
     mocked.sessionGetMock.mockReset();
     mocked.sessionMessagesMock.mockReset();
     mocked.sessionMessagesMock.mockResolvedValue({ data: [], error: null });
@@ -260,6 +264,37 @@ describe("bot/commands/sessions", () => {
     expect(keyboardRows[9]?.[0]?.callback_data).toBe("session:session-10");
     expect(keyboardRows[10]?.[0]?.callback_data).toBe("session:page:1");
     expect(keyboardRows[11]?.[0]?.callback_data).toBe("inline:cancel:session");
+  });
+
+  it("leaves out sessions whose folder is gone without letting them take places on the page", async () => {
+    const sessions = Array.from({ length: 13 }, (_, index) => ({
+      ...createSession(index),
+      directory: index < 2 ? "/gone" : "/repo",
+    }));
+    mocked.sessionListMock.mockImplementation(async ({ limit }: { limit: number }) => ({
+      data: sessions.slice(0, limit),
+      error: null,
+    }));
+    mocked.fileListMock.mockImplementation(async ({ path }: { path: string }) =>
+      path === "/gone"
+        ? {
+            data: undefined,
+            error: Object.assign(new Error("500"), {
+              name: "ClientError",
+              reason: "UnexpectedStatus",
+              cause: { status: 500 },
+            }),
+          }
+        : { data: path === "/" ? ["repo/"] : [], error: undefined },
+    );
+
+    const ctx = createCommandContext();
+    await sessionsCommand(ctx as never, createDeps());
+
+    const keyboardRows = getKeyboardButtons(ctx);
+    expect(keyboardRows[0]?.[0]?.callback_data).toBe("session:session-3");
+    expect(keyboardRows[9]?.[0]?.callback_data).toBe("session:session-12");
+    expect(keyboardRows[10]?.[0]?.callback_data).toBe("session:page:1");
   });
 
   it("lists a session OpenCode has not named yet as a new session", async () => {

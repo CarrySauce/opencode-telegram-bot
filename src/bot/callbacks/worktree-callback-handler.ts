@@ -9,7 +9,10 @@ import {
   switchToProject,
   type ProjectSwitchDeps,
 } from "../../app/services/project-switch-service.js";
-import { getGitWorktreeContext } from "../../app/services/worktree-service.js";
+import {
+  getCurrentFolderWorktreeContext,
+  listPresentWorktrees,
+} from "../../app/services/worktree-service.js";
 import { upsertSessionDirectory } from "../../app/services/session-cache-service.js";
 import { getCurrentProject } from "../../app/stores/settings-store.js";
 import { t } from "../../i18n/index.js";
@@ -44,7 +47,7 @@ async function loadCurrentWorktreeContext() {
     return { currentProject: null, context: null };
   }
 
-  const context = await getGitWorktreeContext(currentProject.worktree);
+  const context = await getCurrentFolderWorktreeContext(currentProject.worktree);
   return { currentProject, context };
 }
 
@@ -86,12 +89,13 @@ export async function handleWorktreeCallback(
     }
 
     if (page !== null) {
-      if (context.worktrees.length === 0) {
+      const worktrees = await listPresentWorktrees(context.worktrees);
+      if (worktrees.length === 0) {
         await ctx.answerCallbackQuery({ text: t("worktree.page_empty_callback") });
         return true;
       }
 
-      const { text, keyboard } = buildWorktreeMenuView(context.worktrees, page);
+      const { text, keyboard } = buildWorktreeMenuView(worktrees, page);
       await ctx.answerCallbackQuery();
       await ctx.editMessageText(text, {
         reply_markup: appendInlineMenuCancelButton(keyboard, "worktree"),

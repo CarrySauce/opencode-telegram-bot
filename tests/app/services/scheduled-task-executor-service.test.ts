@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScheduledOnceTask } from "../../../src/app/types/scheduled-task.js";
+import { t } from "../../../src/i18n/index.js";
 
 const mocked = vi.hoisted(() => ({
   createMock: vi.fn(),
@@ -15,6 +16,11 @@ const mocked = vi.hoisted(() => ({
   cleanupIgnoresMock: vi.fn(),
   registerIgnoreMock: vi.fn(),
   loggerWarnMock: vi.fn(),
+  checkFolderPresenceMock: vi.fn(),
+}));
+
+vi.mock("../../../src/app/services/folder-presence-service.js", () => ({
+  checkFolderPresence: mocked.checkFolderPresenceMock,
 }));
 
 vi.mock("../../../src/opencode/client.js", () => ({
@@ -177,6 +183,7 @@ describe("app/services/scheduled-task-executor-service", () => {
     mocked.deleteMock.mockResolvedValue(undefined);
     mocked.cleanupIgnoresMock.mockResolvedValue(0);
     mocked.registerIgnoreMock.mockResolvedValue(undefined);
+    mocked.checkFolderPresenceMock.mockReset().mockResolvedValue("present");
   });
 
   afterEach(() => {
@@ -225,6 +232,33 @@ describe("app/services/scheduled-task-executor-service", () => {
     expect(mocked.cleanupIgnoresMock).toHaveBeenCalledTimes(1);
     expect(mocked.registerIgnoreMock).toHaveBeenCalledWith("session-1");
     expect(mocked.deleteMock).toHaveBeenCalledWith({ sessionID: "session-1" });
+  });
+
+  it("fails the run with the folder-gone reason and creates no session when the folder is gone", async () => {
+    mocked.checkFolderPresenceMock.mockResolvedValue("missing");
+    const { executeScheduledTask } = await import("../../../src/app/services/scheduled-task-executor-service.js");
+
+    const result = await executeScheduledTask(createTask());
+
+    expect(mocked.checkFolderPresenceMock).toHaveBeenCalledWith("D:\\Projects\\Repo");
+    expect(result).toMatchObject({
+      taskId: "task-1",
+      status: "error",
+      errorMessage: t("task.run.error.folder_missing", { path: "D:\\Projects\\Repo" }),
+    });
+    expect(mocked.createMock).not.toHaveBeenCalled();
+    expect(mocked.promptAsyncMock).not.toHaveBeenCalled();
+  });
+
+  it("runs as usual when the folder's presence is unknown", async () => {
+    mocked.checkFolderPresenceMock.mockResolvedValue("unknown");
+    mocked.createMock.mockResolvedValue({ data: null, error: new Error("create failed") });
+    const { executeScheduledTask } = await import("../../../src/app/services/scheduled-task-executor-service.js");
+
+    const result = await executeScheduledTask(createTask());
+
+    expect(mocked.createMock).toHaveBeenCalled();
+    expect(result).toMatchObject({ status: "error", errorMessage: "create failed" });
   });
 
   it("passes the task's stored agent to promptAsync", async () => {

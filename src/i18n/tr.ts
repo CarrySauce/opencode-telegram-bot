@@ -91,6 +91,10 @@ export const tr: I18nDictionary = {
   "bot.session_reset_project_mismatch":
     "⚠️ Etkin oturum seçili projeyle eşleşmediği için sıfırlandı. Birini seçmek için /sessions veya yeni oturum oluşturmak için /new kullanın.",
   "bot.prompt_send_error": "İstek OpenCode'a gönderilemedi.",
+  "bot.project_folder_missing":
+    "🚫 The project folder no longer exists: {path}. Choose another project in /projects.",
+  "bot.project_folder_missing_worktree":
+    "🚫 The project folder no longer exists: {path}. Choose another worktree in /worktree.",
   "bot.session_error": "🔴 OpenCode bir hata döndürdü: {message}",
   "bot.assistant_reply_undelivered":
     "⚠️ The last assistant reply could not be delivered. Send your message again if you still need it.",
@@ -562,6 +566,7 @@ export const tr: I18nDictionary = {
   "task.kind.once": "tek seferlik",
   "task.run.success": "⏰ Zamanlanmış görev tamamlandı: {description}",
   "task.run.error": "🔴 Zamanlanmış görev başarısız oldu: {description}\n\nHata: {error}",
+  "task.run.error.folder_missing": "The project folder no longer exists: {path}",
   "task.run.error.interactive_question":
     "Zamanlanmış görev etkileşimli bir soru sordu ve gözetimsiz devam edemiyor.",
   "task.run.error.interactive_permission":

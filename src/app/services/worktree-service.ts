@@ -1,7 +1,11 @@
 import { execFile } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import type { GitWorktreeContext, GitWorktreeEntry } from "../types/worktree.js";
+import type { GitWorktreeContext, GitWorktreeEntry, ListedWorktree } from "../types/worktree.js";
+import { isContainerRuntime } from "../../runtime/container.js";
+import { logger } from "../../utils/logger.js";
+import { checkFolderPresence, findMissingFolders } from "./folder-presence-service.js";
+import { getProjects } from "./project-service.js";
 
 const GIT_HEADS_PREFIX = "refs/heads/";
 const GIT_WORKTREES_MARKER = `${path.sep}.git${path.sep}worktrees${path.sep}`;
@@ -204,5 +208,70 @@ export async function getGitWorktreeContext(worktree: string): Promise<GitWorktr
     branch: currentEntry.branch,
     isLinkedWorktree: activeWorktreeKey !== mainProjectKey,
     worktrees,
+  };
+}
+
+/**
+ * The worktrees to list: those whose folder the OpenCode server confirms is gone are left
+ * out, while each row keeps its index in the full list, which is what a selection reads.
+ */
+export async function listPresentWorktrees(
+  worktrees: GitWorktreeEntry[],
+): Promise<ListedWorktree[]> {
+  const missing = await findMissingFolders(worktrees.map((entry) => entry.path));
+  return worktrees
+    .map((entry, gitIndex) => ({ entry, gitIndex }))
+    .filter(({ entry }) => !missing.has(entry.path));
+}
+
+/**
+ * The main repository among the projects that still lists this gone folder as one of its
+ * worktrees — git keeps such an entry until it is pruned. Null when none does, and in a
+ * container, where the bot does not see the projects' folders.
+ */
+export async function findWorktreeOwner(folder: string): Promise<string | null> {
+  if (isContainerRuntime()) {
+    return null;
+  }
+
+  const folderKey = normalizePathKey(folder);
+  try {
+    const candidates = (await getProjects()).filter(
+      (project) => project.worktree !== "/" && normalizePathKey(project.worktree) !== folderKey,
+    );
+    const contexts = await Promise.all(
+      candidates.map((project) => getGitWorktreeContext(project.worktree).catch(() => null)),
+    );
+    const owner = contexts.find((context) =>
+      context?.worktrees.some((entry) => !entry.isMain && normalizePathKey(entry.path) === folderKey),
+    );
+    return owner?.mainProjectPath ?? null;
+  } catch (error) {
+    logger.debug(`[Worktree] Could not look for the repository owning ${folder}:`, error);
+    return null;
+  }
+}
+
+/**
+ * The worktree context of the current folder. When that folder is a worktree the OpenCode
+ * server confirms is gone, it is the context of the repository that still lists it, with no
+ * row marked current, so /worktree can lead away from it.
+ */
+export async function getCurrentFolderWorktreeContext(
+  folder: string,
+): Promise<GitWorktreeContext | null> {
+  const context = await getGitWorktreeContext(folder);
+  if (context || (await checkFolderPresence(folder)) !== "missing") {
+    return context;
+  }
+
+  const owner = await findWorktreeOwner(folder);
+  const ownerContext = owner ? await getGitWorktreeContext(owner) : null;
+  if (!ownerContext) {
+    return null;
+  }
+  return {
+    ...ownerContext,
+    worktrees: ownerContext.worktrees.map((entry) => ({ ...entry, isCurrent: false })),
   };
 }

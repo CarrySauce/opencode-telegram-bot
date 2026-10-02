@@ -27,8 +27,12 @@ import {
   markAttachedSessionBusy,
   markAttachedSessionIdle,
 } from "../../app/services/attach-service.js";
-import { promptAttachment } from "../../app/managers/prompt-attachment-manager.js";
+import {
+  promptAttachment,
+  type PendingAttachment,
+} from "../../app/managers/prompt-attachment-manager.js";
 import { resolvePendingAttachment } from "../../app/services/prompt-attachment-service.js";
+import { getMissingFolderNotice } from "../../app/services/missing-folder-notice-service.js";
 import {
   downloadTelegramFile,
   toDataUri,
@@ -49,6 +53,8 @@ export type PromptResponseMode = "text_only" | "text_and_tts";
 
 type ProcessPromptOptions = {
   responseMode?: PromptResponseMode;
+  /** Sends even when the project folder is gone, leaving the failure to the send itself. */
+  skipProjectFolderCheck?: boolean;
 };
 
 export function getPromptBotInstance(): Bot<Context> | null {
@@ -217,6 +223,13 @@ export async function processUserPrompt(
     );
     await resetMismatchedSessionContext(deps);
     await ctx.reply(t("bot.session_reset_project_mismatch"));
+    return false;
+  }
+
+  if (
+    !options.skipProjectFolderCheck &&
+    (await replyIfProjectFolderMissing(ctx, deps, currentProject.worktree))
+  ) {
     return false;
   }
 
@@ -394,6 +407,37 @@ interface PreparedPromptRequest {
   promptErrorLogContext: Record<string, string | number>;
 }
 
+async function consumePendingAttachment(
+  ctx: Context,
+  deps: ProcessPromptDeps,
+  attachment: PendingAttachment,
+): Promise<void> {
+  promptAttachment.clear("consumed");
+  deps.interactionManager.clear("attachment_consumed");
+  await retireAttachmentConfirmation(ctx, attachment.confirmationMessageId);
+}
+
+/**
+ * Answers with the notice when the server confirms the project folder is gone; nothing is
+ * sent then, and a file attached from /ls is dropped as after any failed send.
+ */
+async function replyIfProjectFolderMissing(
+  ctx: Context,
+  deps: ProcessPromptDeps,
+  folder: string,
+): Promise<boolean> {
+  const notice = await getMissingFolderNotice(folder);
+  if (!notice) {
+    return false;
+  }
+  const pendingAttachment = promptAttachment.get();
+  if (pendingAttachment) {
+    await consumePendingAttachment(ctx, deps, pendingAttachment);
+  }
+  await ctx.reply(notice);
+  return true;
+}
+
 /**
  * Turns an incoming prompt into the OpenCode request: downloads Telegram photos, adds a
  * file attached through /ls, and resolves the agent, model and variant.
@@ -428,9 +472,7 @@ async function preparePromptRequest(
     // Cleared here rather than once the prompt is sent: a failure afterwards clears the
     // interaction but knows nothing about the attachment, which would leave it behind to
     // be picked up silently by an unrelated later prompt.
-    promptAttachment.clear("consumed");
-    deps.interactionManager.clear("attachment_consumed");
-    await retireAttachmentConfirmation(ctx, pendingAttachment.confirmationMessageId);
+    await consumePendingAttachment(ctx, deps, pendingAttachment);
   }
 
   const promptOptions = buildPromptOptions(currentSession, preparedInput, attachmentPart, {
@@ -565,6 +607,10 @@ export async function admitPromptToInbox(
   if (!currentSession) {
     logger.warn("[Bot] Cannot send a prompt to the inbox: no current session");
     await ctx.reply(t("bot.prompt_send_error"));
+    return null;
+  }
+
+  if (await replyIfProjectFolderMissing(ctx, deps, currentSession.directory)) {
     return null;
   }
 

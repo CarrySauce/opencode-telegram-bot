@@ -1,6 +1,9 @@
 import type { CommandContext, Context } from "grammy";
 import type { AppContainer } from "../../app/bootstrap/app-container.js";
-import { getGitWorktreeContext } from "../../app/services/worktree-service.js";
+import {
+  getCurrentFolderWorktreeContext,
+  listPresentWorktrees,
+} from "../../app/services/worktree-service.js";
 import { isForegroundBusy } from "../../app/services/run-control-service.js";
 import { getCurrentProject } from "../../app/stores/settings-store.js";
 import { logger } from "../../utils/logger.js";
@@ -16,7 +19,7 @@ async function loadCurrentWorktreeContext() {
     return { currentProject: null, context: null };
   }
 
-  const context = await getGitWorktreeContext(currentProject.worktree);
+  const context = await getCurrentFolderWorktreeContext(currentProject.worktree);
   return { currentProject, context };
 }
 
@@ -52,12 +55,13 @@ export async function worktreeCommand(
       return;
     }
 
-    if (context.worktrees.length === 0) {
+    const worktrees = await listPresentWorktrees(context.worktrees);
+    if (worktrees.length === 0) {
       await ctx.reply(t("worktree.empty"));
       return;
     }
 
-    const { text, keyboard } = buildWorktreeMenuView(context.worktrees, 0);
+    const { text, keyboard } = buildWorktreeMenuView(worktrees, 0);
 
     await replyWithInlineMenu(ctx, {
       menuKind: "worktree",

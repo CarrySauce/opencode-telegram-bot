@@ -3,8 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { projectListMock, cachedSessionProjectsMock, configMock } = vi.hoisted(() => ({
+const { projectListMock, fileListMock, cachedSessionProjectsMock, configMock } = vi.hoisted(() => ({
   projectListMock: vi.fn(),
+  fileListMock: vi.fn(),
   cachedSessionProjectsMock: vi.fn(),
   configMock: {
     bot: {
@@ -14,6 +15,8 @@ const { projectListMock, cachedSessionProjectsMock, configMock } = vi.hoisted(()
 }));
 
 vi.mock("../../../src/opencode/client.js", () => ({
+  opencodeServerVersion: "v2",
+  opencodeV2Client: { file: { list: fileListMock } },
   opencodeClient: {
     project: {
       list: projectListMock,
@@ -30,7 +33,11 @@ vi.mock("../../../src/app/services/session-cache-service.js", () => ({
   __resetSessionDirectoryCacheForTests: vi.fn(),
 }));
 
-import { getProjects, getProjectByWorktree } from "../../../src/app/services/project-service.js";
+import {
+  getListedProjects,
+  getProjects,
+  getProjectByWorktree,
+} from "../../../src/app/services/project-service.js";
 
 describe("project/manager", () => {
   let tempRoot = "";
@@ -70,6 +77,34 @@ describe("project/manager", () => {
       { id: "p2", worktree: "D:/repo-b", name: "D:/repo-b" },
       { id: "dir_1", worktree: "D:/repo-c", name: "D:/repo-c" },
     ]);
+  });
+
+  it("lists only projects whose folder the server has not confirmed gone", async () => {
+    projectListMock.mockResolvedValueOnce({
+      data: [
+        { id: "global", worktree: "/", name: "" },
+        { id: "p1", worktree: "/srv/live", name: "Live" },
+        { id: "p2", worktree: "/srv/gone", name: "Gone" },
+      ],
+      error: null,
+    });
+    cachedSessionProjectsMock.mockResolvedValueOnce([]);
+    fileListMock.mockImplementation(async ({ path }: { path: string }) =>
+      path === "/srv/gone"
+        ? {
+            data: undefined,
+            error: Object.assign(new Error("500"), {
+              name: "ClientError",
+              reason: "UnexpectedStatus",
+              cause: { status: 500 },
+            }),
+          }
+        : { data: path === "/srv" ? ["live/"] : [], error: undefined },
+    );
+
+    const projects = await getListedProjects();
+
+    expect(projects.map((project) => project.id)).toEqual(["global", "p1"]);
   });
 
   it("throws when API returns error", async () => {

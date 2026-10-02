@@ -67,6 +67,13 @@ export interface V2ClientExtension {
      */
     reload: () => Promise<Result<true>>;
   };
+  file: {
+    /**
+     * Paths of the entries of a folder as the server's own filesystem lists it. No location
+     * is loaded for the folder, so listing one that is gone registers nothing on the server.
+     */
+    list: (params: { path: string }) => Promise<Result<string[]>>;
+  };
 }
 
 interface CommandParams {
@@ -424,6 +431,12 @@ export function createV2OpencodeClient(options: V2ClientOptions): OpencodeClient
           await client.location.reload();
           return true as const;
         }),
+    },
+    file: {
+      list: (params: { path: string }) =>
+        run(async () =>
+          (await client.file.list({ path: params.path })).data.map((entry) => entry.path),
+        ),
     },
     experimental: {
       session: {

@@ -17,6 +17,7 @@ import { defined } from "../../helpers/defined.js";
 
 const mocked = vi.hoisted(() => ({
   resolvePendingAttachmentMock: vi.fn(),
+  getMissingFolderNoticeMock: vi.fn(),
   interactionClearMock: vi.fn(),
   editMessageReplyMarkupMock: vi.fn(),
   currentProject: { id: "project-1", worktree: "D:\\Projects\\Repo" },
@@ -92,6 +93,10 @@ vi.mock("../../../src/app/services/attach-service.js", () => ({
   detachAttachedSession: vi.fn(),
   markAttachedSessionBusy: vi.fn().mockResolvedValue(undefined),
   markAttachedSessionIdle: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../../../src/app/services/missing-folder-notice-service.js", () => ({
+  getMissingFolderNotice: mocked.getMissingFolderNoticeMock,
 }));
 
 // The resolver has its own suite; here only the wiring around it is under test.
@@ -225,6 +230,71 @@ describe("bot/handlers/prompt", () => {
     mocked.resolvePendingAttachmentMock.mockResolvedValue(null);
     mocked.editMessageReplyMarkupMock.mockReset();
     mocked.editMessageReplyMarkupMock.mockResolvedValue(undefined);
+    mocked.getMissingFolderNoticeMock.mockReset().mockResolvedValue(null);
+  });
+
+  describe("project folder gone", () => {
+    beforeEach(() => {
+      mocked.getMissingFolderNoticeMock.mockResolvedValue("folder gone notice");
+    });
+
+    it("answers with the notice and sends nothing", async () => {
+      const ctx = createContext();
+
+      const handled = await processUserPrompt(ctx, "Review README", createDeps());
+
+      expect(handled).toBe(false);
+      expect(mocked.getMissingFolderNoticeMock).toHaveBeenCalledWith("D:\\Projects\\Repo");
+      expect(ctx.reply).toHaveBeenCalledWith("folder gone notice");
+      expect(mocked.safeBackgroundTaskMock).not.toHaveBeenCalled();
+      expect(mocked.attachToSessionMock).not.toHaveBeenCalled();
+    });
+
+    it("creates no session when none is selected", async () => {
+      mocked.currentSession = null;
+      const ctx = createContext();
+
+      await processUserPrompt(ctx, "Review README", createDeps());
+
+      expect(mocked.sessionCreateMock).not.toHaveBeenCalled();
+      expect(ctx.reply).not.toHaveBeenCalledWith(t("bot.creating_session"));
+    });
+
+    it("drops a pending /ls attachment as a failed send does", async () => {
+      promptAttachment.set("D:\\Projects\\Repo\\src\\index.ts", "D:\\Projects\\Repo");
+      promptAttachment.setConfirmationMessageId(555);
+
+      await processUserPrompt(createContext(), "Explain this file", createDeps());
+
+      expect(promptAttachment.get()).toBeNull();
+      expect(mocked.interactionClearMock).toHaveBeenCalledWith("attachment_consumed");
+      expect(mocked.editMessageReplyMarkupMock).toHaveBeenCalledWith(777, 555);
+      expect(mocked.resolvePendingAttachmentMock).not.toHaveBeenCalled();
+    });
+
+    it("leaves a prompt started from the skills catalog to the send itself", async () => {
+      await processIncomingPrompt(createContext(), createIncomingPrompt("/review"), createDeps(), {
+        skipProjectFolderCheck: true,
+      });
+
+      expect(mocked.getMissingFolderNoticeMock).not.toHaveBeenCalled();
+      expect(mocked.safeBackgroundTaskMock).toHaveBeenCalled();
+    });
+
+    it("keeps a prompt for a busy session out of its inbox", async () => {
+      const ctx = createContext();
+
+      const admitted = await admitPromptToInbox(
+        ctx,
+        createIncomingPrompt("Also check tests"),
+        createDeps(),
+        "queue",
+      );
+
+      expect(admitted).toBeNull();
+      expect(ctx.reply).toHaveBeenCalledWith("folder gone notice");
+      expect(mocked.sessionPromptAsyncMock).not.toHaveBeenCalled();
+    });
   });
 
   it("registers suppression entry for text prompts", async () => {

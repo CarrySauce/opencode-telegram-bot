@@ -7,6 +7,7 @@ import type { InteractionState } from "../../app/types/interaction.js";
 import { getStoredModel } from "../../app/services/model-selection-service.js";
 import { getStoredAgent } from "../../app/services/agent-selection-service.js";
 import { getCurrentProject } from "../../app/stores/settings-store.js";
+import { getMissingFolderNotice } from "../../app/services/missing-folder-notice-service.js";
 import { parseTaskSchedule } from "../../app/services/scheduled-task-schedule-parser-service.js";
 import { addScheduledTask, listScheduledTasks } from "../../app/stores/scheduled-task-store.js";
 import { buildCancelKeyboard, buildRetryScheduleKeyboard } from "../menus/scheduled-task-menu.js";
@@ -300,6 +301,12 @@ export async function taskCommand(
   const currentProject = getCurrentProject();
   if (!currentProject) {
     await ctx.reply(t("bot.project_not_selected"));
+    return;
+  }
+
+  const folderNotice = await getMissingFolderNotice(currentProject.worktree);
+  if (folderNotice) {
+    await ctx.reply(folderNotice);
     return;
   }
 

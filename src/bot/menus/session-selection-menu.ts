@@ -3,6 +3,7 @@ import { opencodeClient } from "../../opencode/client.js";
 import { getDateLocale, t } from "../../i18n/index.js";
 import { formatSessionTitle } from "../../app/formatters/session-title-formatter.js";
 import { logger } from "../../utils/logger.js";
+import { collectFromPresentFolders } from "../../app/services/folder-presence-service.js";
 
 export const SESSION_CALLBACK_PREFIX = "session:";
 const SESSION_PAGE_CALLBACK_PREFIX = "session:page:";
@@ -124,15 +125,18 @@ export async function loadSessionPage(
   const startIndex = page * pageSize;
   const endExclusive = startIndex + pageSize;
 
-  const { data: sessions, error } = await opencodeClient.session.list({
-    directory,
-    limit: endExclusive + SESSION_FETCH_EXTRA_COUNT,
-    roots: true,
-  });
-
-  if (error || !sessions) {
-    throw error || new Error("No data received from server");
-  }
+  // Sessions whose folder is gone are left out before the list is split into pages.
+  const sessions = await collectFromPresentFolders(
+    async (limit) => {
+      const { data, error } = await opencodeClient.session.list({ directory, limit, roots: true });
+      if (error || !data) {
+        throw error || new Error("No data received from server");
+      }
+      return data;
+    },
+    (session) => session.directory,
+    endExclusive + SESSION_FETCH_EXTRA_COUNT,
+  );
 
   const hasNext = sessions.length > endExclusive;
   const pagedSessions = sessions.slice(startIndex, endExclusive);

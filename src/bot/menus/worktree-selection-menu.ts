@@ -1,7 +1,7 @@
 import { InlineKeyboard } from "grammy";
 import { config } from "../../config.js";
 import { t } from "../../i18n/index.js";
-import type { GitWorktreeEntry } from "../../app/types/worktree.js";
+import type { GitWorktreeEntry, ListedWorktree } from "../../app/types/worktree.js";
 import {
   buildProjectButtonLabel,
   calculateProjectsPaginationRange,
@@ -68,7 +68,7 @@ function buildWorktreeMenuText(page: number, totalPages: number): string {
   })}`;
 }
 
-function buildWorktreeKeyboard(worktrees: GitWorktreeEntry[], page: number): InlineKeyboard {
+function buildWorktreeKeyboard(worktrees: ListedWorktree[], page: number): InlineKeyboard {
   const keyboard = new InlineKeyboard();
   const pageSize = config.bot.projectsListLimit;
   const {
@@ -78,12 +78,13 @@ function buildWorktreeKeyboard(worktrees: GitWorktreeEntry[], page: number): Inl
     endIndex,
   } = calculateProjectsPaginationRange(worktrees.length, page, pageSize);
 
-  worktrees.slice(startIndex, endIndex).forEach((entry, index) => {
+  // Rows are numbered as listed; the button carries the row's index in the full git list.
+  worktrees.slice(startIndex, endIndex).forEach(({ entry, gitIndex }, index) => {
     const label = buildWorktreeButtonLabel(startIndex + index, entry);
     keyboard
       .text(
         formatWorktreeButtonLabel(label, entry.isCurrent),
-        `${WORKTREE_CALLBACK_PREFIX}${startIndex + index}`,
+        `${WORKTREE_CALLBACK_PREFIX}${gitIndex}`,
       )
       .row();
   });
@@ -108,7 +109,7 @@ function buildWorktreeKeyboard(worktrees: GitWorktreeEntry[], page: number): Inl
 }
 
 export function buildWorktreeMenuView(
-  worktrees: GitWorktreeEntry[],
+  worktrees: ListedWorktree[],
   page: number,
 ): { text: string; keyboard: InlineKeyboard } {
   const { page: normalizedPage, totalPages } = calculateProjectsPaginationRange(

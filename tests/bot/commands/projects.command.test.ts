@@ -20,6 +20,7 @@ vi.mock("../../../src/app/services/session-cache-service.js", () => ({
 
 vi.mock("../../../src/app/services/project-service.js", () => ({
   getProjects: mocked.getProjectsMock,
+  getListedProjects: mocked.getProjectsMock,
 }));
 
 vi.mock("../../../src/app/services/worktree-service.js", () => ({

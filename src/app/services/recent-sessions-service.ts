@@ -2,6 +2,7 @@ import type { GlobalSession } from "@opencode-ai/sdk/v2";
 import { opencodeClient } from "../../opencode/client.js";
 import { getCurrentSession } from "../stores/settings-store.js";
 import { logger } from "../../utils/logger.js";
+import { checkFolderPresence, collectFromPresentFolders } from "./folder-presence-service.js";
 
 export type RecentStatus = "question" | "permission" | "running" | "idle";
 type RecentSessionInfo = Pick<GlobalSession, "id" | "directory" | "title" | "time">;
@@ -32,14 +33,17 @@ export async function resolveSessionParentChain(
 }
 
 export async function loadRecentSessions(limit: number): Promise<RecentSession[]> {
-  const sessions: RecentSessionInfo[] = await loadGlobalSessions(limit);
+  // Sessions whose folder is gone are left out and do not take places within the limit.
+  const sessions: RecentSessionInfo[] = (
+    await collectFromPresentFolders(loadGlobalSessions, (session) => session.directory, limit)
+  ).slice(0, limit);
   const attached = getCurrentSession();
   if (attached && !sessions.some((session) => session.id === attached.id) && sessions.length > 0) {
     const { data, error } = await opencodeClient.session.get({
       sessionID: attached.id,
       directory: attached.directory,
     });
-    if (!error && data && !data.parentID) {
+    if (!error && data && !data.parentID && (await checkFolderPresence(data.directory)) !== "missing") {
       sessions.splice(limit - 1, 1, data);
     }
   }

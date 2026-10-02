@@ -4,6 +4,7 @@ import { opencodeClient } from "../../opencode/client.js";
 import { config } from "../../config.js";
 import { getCachedSessionProjects } from "./session-cache-service.js";
 import { logger } from "../../utils/logger.js";
+import { findMissingFolders } from "./folder-presence-service.js";
 import type { ProjectInfo } from "../types/project.js";
 
 interface InternalProject extends ProjectInfo {
@@ -134,6 +135,13 @@ function isWindowsWorktreePath(worktree: string): boolean {
 export async function getProjects(): Promise<ProjectInfo[]> {
   const projects = await getResolvedProjects();
   return projects.map(({ id, worktree, name }) => ({ id, worktree, name }));
+}
+
+/** The projects to list: those whose folder the OpenCode server confirms is gone are left out. */
+export async function getListedProjects(): Promise<ProjectInfo[]> {
+  const projects = await getProjects();
+  const missing = await findMissingFolders(projects.map((project) => project.worktree));
+  return projects.filter((project) => !missing.has(project.worktree));
 }
 
 export async function getProjectById(id: string): Promise<ProjectInfo> {

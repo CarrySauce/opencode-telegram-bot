@@ -1,6 +1,6 @@
 import type { CommandContext, Context } from "grammy";
 import type { AppContainer } from "../../app/bootstrap/app-container.js";
-import { getProjects } from "../../app/services/project-service.js";
+import { getListedProjects } from "../../app/services/project-service.js";
 import { isForegroundBusy } from "../../app/services/run-control-service.js";
 import { syncSessionDirectoryCache } from "../../app/services/session-cache-service.js";
 import { t } from "../../i18n/index.js";
@@ -25,7 +25,7 @@ export async function projectsCommand(
     }
 
     await syncSessionDirectoryCache();
-    const projects = await getProjects();
+    const projects = await getListedProjects();
 
     if (projects.length === 0) {
       await ctx.reply(t("projects.empty"));

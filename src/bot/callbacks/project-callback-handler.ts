@@ -1,6 +1,6 @@
 import type { Context } from "grammy";
 import type { AppContainer } from "../../app/bootstrap/app-container.js";
-import { getProjects } from "../../app/services/project-service.js";
+import { getListedProjects, getProjects } from "../../app/services/project-service.js";
 import {
   isForegroundBusy,
   type ForegroundBusyDeps,
@@ -55,7 +55,7 @@ export async function handleProjectSelect(ctx: Context, deps: ProjectSelectDeps)
     }
 
     try {
-      const projects = await getProjects();
+      const projects = await getListedProjects();
       if (projects.length === 0) {
         await alert(ctx, "projects.empty");
         return true;
