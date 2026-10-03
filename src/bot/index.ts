@@ -20,6 +20,7 @@ import {
 } from "./handlers/prompt-queue-dispatch.js";
 import { initializePromptHandover } from "./handlers/prompt-handover.js";
 import { normalizeRichMessage } from "./handlers/rich-message-handler.js";
+import { handleGuestMessage } from "./handlers/guest-message-handler.js";
 import { authMiddleware } from "./middleware/auth.js";
 import { interactionGuardMiddleware } from "./middleware/interaction-guard.js";
 import { staleUpdateMiddleware } from "./middleware/stale-update.js";
@@ -188,6 +189,9 @@ export function createBot(
   });
 
   bot.use(authMiddleware);
+  if (config.bot.guestMode) {
+    bot.on("guest_message", handleGuestMessage);
+  }
   bot.use(staleUpdateMiddleware);
   bot.on("message:rich_message", normalizeRichMessage);
   bot.use((ctx, next) => ensureCommandsInitialized(ctx, next, localCommandRegistry));

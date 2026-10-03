@@ -72,7 +72,7 @@ class ScheduledTaskEmptyAssistantResponseError extends Error {
   }
 }
 
-class ScheduledTaskInteractiveRequestError extends Error {
+export class ScheduledTaskInteractiveRequestError extends Error {
   constructor(kind: InteractiveRequestKind) {
     super(
       t(
@@ -388,7 +388,7 @@ async function loadAssistantResult(
   return extractAssistantResult(findLatestAssistantMessage(messages));
 }
 
-async function waitForScheduledTaskResult(
+export async function waitForScheduledTaskResult(
   taskId: string,
   sessionId: string,
   directory: string,

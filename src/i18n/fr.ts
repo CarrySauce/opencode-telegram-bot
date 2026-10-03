@@ -593,6 +593,17 @@ export const fr: I18nDictionary = {
   "task.run.error.interactive_permission":
     "La tâche planifiée a demandé une autorisation interactive et ne peut pas continuer sans intervention.",
 
+  "guest.thinking": "⏳ Réflexion…",
+  "guest.working": "⏳ En cours… {elapsed}",
+  "guest.busy": "Je travaille encore sur la demande précédente dans ce chat. Réessaie quand elle sera terminée.",
+  "guest.empty": "Mentionne-moi avec une demande, par exemple : @bot que fait ce dépôt ?",
+  "guest.command_unsupported": "Les commandes ne fonctionnent pas dans les chats invités. Ouvre un chat privé avec le bot pour les utiliser.",
+  "guest.unsupported_message": "Seules les demandes texte fonctionnent dans les chats invités.",
+  "guest.error.no_project": "Sélectionne d'abord un projet dans le chat privé avec le bot.",
+  "guest.error.interactive": "OpenCode a demandé une autorisation ou posé une question à laquelle on ne peut pas répondre depuis un chat invité. Continue dans le chat privé avec le bot.",
+  "guest.error.generic": "Un problème est survenu pendant la réponse. Les détails sont dans le journal du bot.",
+  "guest.truncated": "(Réponse raccourcie. La réponse complète se trouve dans la session invité du chat privé.)",
+
   "tasklist.empty": "📭 Aucune tâche planifiée pour le moment.",
   "tasklist.select": "Sélectionnez une tâche planifiée :",
   "tasklist.details":

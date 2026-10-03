@@ -4,6 +4,7 @@ import type { ProjectInfo } from "../types/project.js";
 import type { SessionDirectoryCacheInfo, SessionInfo } from "../types/session.js";
 import { cloneScheduledTask, type ScheduledTask } from "../types/scheduled-task.js";
 import type {
+  GuestSessionInfo,
   PromptQueueMode,
   ResponseStreamingMode,
   ScheduledTaskSessionIgnoreInfo,
@@ -344,6 +345,16 @@ export function setScheduledTaskSessionIgnores(
   ignores: ScheduledTaskSessionIgnoreInfo[],
 ): Promise<void> {
   currentSettings.scheduledTaskSessionIgnores = cloneScheduledTaskSessionIgnores(ignores);
+  return writeSettingsFile(currentSettings);
+}
+
+export function getGuestSession(chatId: string): GuestSessionInfo | undefined {
+  const session = currentSettings.guestSessions?.[chatId];
+  return session ? { ...session } : undefined;
+}
+
+export function setGuestSession(chatId: string, session: GuestSessionInfo): Promise<void> {
+  currentSettings.guestSessions = { ...currentSettings.guestSessions, [chatId]: { ...session } };
   return writeSettingsFile(currentSettings);
 }
 

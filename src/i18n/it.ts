@@ -583,6 +583,17 @@ export const it: I18nDictionary = {
   "task.run.error.interactive_permission":
     "L'attività pianificata ha richiesto un permesso interattivo e non può proseguire senza supervisione.",
 
+  "guest.thinking": "⏳ Sto pensando…",
+  "guest.working": "⏳ Al lavoro… {elapsed}",
+  "guest.busy": "Sto ancora lavorando alla richiesta precedente in questa chat. Riprova quando ho finito.",
+  "guest.empty": "Menzionami con una richiesta, ad esempio: @bot cosa fa questo repository?",
+  "guest.command_unsupported": "I comandi non funzionano nelle chat ospite. Apri una chat privata con il bot per usarli.",
+  "guest.unsupported_message": "Nelle chat ospite funzionano solo le richieste di testo.",
+  "guest.error.no_project": "Prima seleziona un progetto nella chat privata con il bot.",
+  "guest.error.interactive": "OpenCode ha chiesto un permesso o fatto una domanda a cui non si può rispondere da una chat ospite. Continua nella chat privata con il bot.",
+  "guest.error.generic": "Qualcosa è andato storto durante la risposta. I dettagli sono nel log del bot.",
+  "guest.truncated": "(Risposta abbreviata. La risposta completa è nella sessione ospite della chat privata.)",
+
   "tasklist.empty": "📭 Nessuna attività pianificata.",
   "tasklist.select": "Seleziona un'attività pianificata:",
   "tasklist.details":

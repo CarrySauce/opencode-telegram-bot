@@ -572,6 +572,17 @@ export const tr: I18nDictionary = {
   "task.run.error.interactive_permission":
     "Zamanlanmış görev etkileşimli izin istedi ve gözetimsiz devam edemiyor.",
 
+  "guest.thinking": "⏳ Düşünüyorum…",
+  "guest.working": "⏳ Çalışıyorum… {elapsed}",
+  "guest.busy": "Bu sohbetteki önceki istek üzerinde hâlâ çalışıyorum. Bittiğinde tekrar dene.",
+  "guest.empty": "Beni bir istekle an, örneğin: @bot bu depo ne yapıyor?",
+  "guest.command_unsupported": "Komutlar misafir sohbetlerinde çalışmaz. Kullanmak için bot ile özel sohbet aç.",
+  "guest.unsupported_message": "Misafir sohbetlerinde yalnızca metin istekleri çalışır.",
+  "guest.error.no_project": "Önce bot ile özel sohbette bir proje seç.",
+  "guest.error.interactive": "OpenCode, misafir sohbetinden yanıtlanamayan bir izin ya da soru istedi. Bot ile özel sohbette devam et.",
+  "guest.error.generic": "Yanıtlarken bir sorun oluştu. Ayrıntılar bot günlüğünde.",
+  "guest.truncated": "(Yanıt kısaltıldı. Tam yanıt özel sohbetteki misafir oturumunda.)",
+
   "tasklist.empty": "📭 Henüz zamanlanmış görev yok.",
   "tasklist.select": "Bir zamanlanmış görev seçin:",
   "tasklist.details":

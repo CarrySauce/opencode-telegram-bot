@@ -591,6 +591,17 @@ export const de: I18nDictionary = {
   "task.run.error.interactive_permission":
     "Die geplante Aufgabe hat eine interaktive Berechtigung angefordert und kann unbeaufsichtigt nicht fortfahren.",
 
+  "guest.thinking": "⏳ Denke nach…",
+  "guest.working": "⏳ Arbeite… {elapsed}",
+  "guest.busy": "Ich arbeite in diesem Chat noch an der vorherigen Anfrage. Versuche es erneut, wenn sie fertig ist.",
+  "guest.empty": "Erwähne mich mit einer Anfrage, zum Beispiel: @bot was macht dieses Repo?",
+  "guest.command_unsupported": "Befehle funktionieren in Gast-Chats nicht. Öffne dafür einen privaten Chat mit dem Bot.",
+  "guest.unsupported_message": "In Gast-Chats funktionieren nur Textanfragen.",
+  "guest.error.no_project": "Wähle zuerst im privaten Chat mit dem Bot ein Projekt aus.",
+  "guest.error.interactive": "OpenCode hat eine Berechtigung oder eine Frage angefordert, die aus einem Gast-Chat nicht beantwortet werden kann. Mach im privaten Chat mit dem Bot weiter.",
+  "guest.error.generic": "Beim Antworten ist etwas schiefgelaufen. Details stehen im Bot-Log.",
+  "guest.truncated": "(Antwort gekürzt. Die vollständige Antwort steht in der Gast-Sitzung im privaten Chat.)",
+
   "tasklist.empty": "📭 Noch keine geplanten Aufgaben.",
   "tasklist.select": "Wähle eine geplante Aufgabe:",
   "tasklist.details":

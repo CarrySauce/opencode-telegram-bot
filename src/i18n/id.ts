@@ -568,6 +568,17 @@ export const id: I18nDictionary = {
   "task.run.error.interactive_permission":
     "Tugas terjadwal meminta izin interaktif, jadi tidak bisa lanjut tanpa pengawasan.",
 
+  "guest.thinking": "⏳ Berpikir…",
+  "guest.working": "⏳ Mengerjakan… {elapsed}",
+  "guest.busy": "Saya masih mengerjakan permintaan sebelumnya di chat ini. Coba lagi setelah selesai.",
+  "guest.empty": "Sebut saya dengan permintaan, misalnya: @bot apa fungsi repo ini?",
+  "guest.command_unsupported": "Perintah tidak berfungsi di chat tamu. Buka chat pribadi dengan bot untuk menggunakannya.",
+  "guest.unsupported_message": "Hanya permintaan teks yang berfungsi di chat tamu.",
+  "guest.error.no_project": "Pilih proyek di chat pribadi dengan bot terlebih dahulu.",
+  "guest.error.interactive": "OpenCode meminta izin atau mengajukan pertanyaan yang tidak bisa dijawab dari chat tamu. Lanjutkan di chat pribadi dengan bot.",
+  "guest.error.generic": "Terjadi kesalahan saat menjawab. Detailnya ada di log bot.",
+  "guest.truncated": "(Balasan dipersingkat. Jawaban lengkap ada di sesi tamu di chat pribadi.)",
+
   "tasklist.empty": "📭 Belum ada tugas terjadwal.",
   "tasklist.select": "Pilih tugas terjadwal:",
   "tasklist.details":

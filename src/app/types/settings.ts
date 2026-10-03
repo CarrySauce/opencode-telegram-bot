@@ -12,6 +12,12 @@ export interface ScheduledTaskSessionIgnoreInfo {
   createdAt: string;
 }
 
+/** OpenCode session a guest chat talks to, so follow-up mentions keep their context. */
+export interface GuestSessionInfo {
+  sessionId: string;
+  directory: string;
+}
+
 export interface Settings {
   currentProject?: ProjectInfo | undefined;
   currentSession?: SessionInfo | undefined;
@@ -31,4 +37,5 @@ export interface Settings {
   sessionDirectoryCache?: SessionDirectoryCacheInfo | undefined;
   scheduledTasks?: ScheduledTask[] | undefined;
   scheduledTaskSessionIgnores?: ScheduledTaskSessionIgnoreInfo[] | undefined;
+  guestSessions?: Record<string, GuestSessionInfo> | undefined;
 }

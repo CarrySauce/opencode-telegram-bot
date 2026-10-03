@@ -21,8 +21,9 @@ export async function authMiddleware(ctx: Context, next: NextFunction): Promise<
 
     // Actively hide commands for unauthorized users by setting empty command list
     // Only do this if the chat is NOT the authorized user's chat
-    // (to avoid resetting commands when forwarded messages are received)
-    if (ctx.chat?.id && ctx.chat.id !== config.telegram.allowedUserId) {
+    // (to avoid resetting commands when forwarded messages are received).
+    // A guest message comes from a chat the bot never joined, where it has no commands to hide.
+    if (ctx.chat?.id && ctx.chat.id !== config.telegram.allowedUserId && !ctx.guestMessage) {
       try {
         // Set empty commands for this specific chat (more reliable than deleteMyCommands)
         await ctx.api.setMyCommands([], {

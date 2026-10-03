@@ -568,6 +568,17 @@ export const en = {
   "task.run.error.interactive_permission":
     "Scheduled task requested interactive permission and cannot continue unattended.",
 
+  "guest.thinking": "⏳ Thinking…",
+  "guest.working": "⏳ Working… {elapsed}",
+  "guest.busy": "I'm still working on the previous request in this chat. Try again when it's done.",
+  "guest.empty": "Mention me with a request, for example: @bot what does this repo do?",
+  "guest.command_unsupported": "Commands don't work in guest chats. Open a private chat with the bot to use them.",
+  "guest.unsupported_message": "Only text requests work in guest chats.",
+  "guest.error.no_project": "Select a project in the private chat with the bot first.",
+  "guest.error.interactive": "OpenCode asked for a permission or a question, which can't be answered from a guest chat. Continue in the private chat with the bot.",
+  "guest.error.generic": "Something went wrong while answering. Details are in the bot log.",
+  "guest.truncated": "(Reply shortened. The full answer is in the guest session in the private chat.)",
+
   "tasklist.empty": "📭 No scheduled tasks yet.",
   "tasklist.select": "Select a scheduled task:",
   "tasklist.details":

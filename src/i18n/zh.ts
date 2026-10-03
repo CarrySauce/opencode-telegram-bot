@@ -524,6 +524,17 @@ export const zh: I18nDictionary = {
   "task.run.error.interactive_question": "定时任务请求了交互式问题，无法在无人值守时继续。",
   "task.run.error.interactive_permission": "定时任务请求了交互式权限，无法在无人值守时继续。",
 
+  "guest.thinking": "⏳ 思考中…",
+  "guest.working": "⏳ 处理中… {elapsed}",
+  "guest.busy": "我仍在处理此聊天中的上一个请求。完成后再试一次。",
+  "guest.empty": "请在提及我时附上请求，例如：@bot 这个仓库是做什么的？",
+  "guest.command_unsupported": "命令在访客聊天中不可用。请在与机器人的私聊中使用。",
+  "guest.unsupported_message": "访客聊天中只支持文本请求。",
+  "guest.error.no_project": "请先在与机器人的私聊中选择一个项目。",
+  "guest.error.interactive": "OpenCode 请求了权限或提出了问题，无法在访客聊天中回答。请在与机器人的私聊中继续。",
+  "guest.error.generic": "回答时出现问题。详情见机器人日志。",
+  "guest.truncated": "（回复已缩短。完整回答在私聊中的访客会话里。）",
+
   "tasklist.empty": "📭 还没有定时任务。",
   "tasklist.select": "请选择一个定时任务：",
   "tasklist.details":

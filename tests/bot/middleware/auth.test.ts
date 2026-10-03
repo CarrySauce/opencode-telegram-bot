@@ -111,4 +111,18 @@ describe("bot/middleware/auth", () => {
     );
     expect(setMyCommands).not.toHaveBeenCalled();
   });
+
+  it("refuses a foreign guest caller without touching the guest chat's commands", async () => {
+    const { ctx, setMyCommands } = createContext({ id: 999, is_bot: false }, -100123);
+    Object.assign(ctx, { guestMessage: { message_id: 1, guest_query_id: "q-1" } });
+    const next = vi.fn();
+
+    await authMiddleware(ctx, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(mocked.loggerWarnMock).toHaveBeenCalledWith(
+      "Unauthorized access attempt from user ID: 999",
+    );
+    expect(setMyCommands).not.toHaveBeenCalled();
+  });
 });

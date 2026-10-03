@@ -181,6 +181,18 @@ Scheduled tasks let you prepare prompts in advance and run them automatically la
 - By default, the bot waits up to 120 minutes for one scheduled task run; change this with `SCHEDULED_TASK_EXECUTION_TIMEOUT_MINUTES` if needed
 - Up to 10 scheduled tasks can exist at once by default; change this with `TASK_LIMIT` in your `.env`
 
+## Guest Mode
+
+With `TELEGRAM_GUEST_MODE=true`, you can @mention the bot in any chat, including a group it was never added to, and it answers there (Telegram guest bots, Bot API 10.0). Telegram delivers the mention as a guest message the bot may answer exactly once, so the bot posts a "⏳ Thinking…" placeholder, shows the elapsed time on it while OpenCode works, and then edits it into the reply.
+
+- Only `TELEGRAM_ALLOWED_USER_ID` can use it; mentions from anyone else are ignored and logged
+- Each guest chat has its own OpenCode session in the currently selected project (titled `Guest: <chat name>`), so follow-up mentions keep their context; it uses the current model and agent, and a new session starts after you switch projects
+- Guest turns run outside your private chat: they do not interrupt the current session and are not mirrored into it. Open the guest session from `/sessions` to see everything it did
+- Text requests only. Slash commands, attachments, and a second mention while the chat's previous request is still running get a short reply instead
+- A question or permission request from OpenCode cannot be answered from a guest chat, so it is rejected and the turn stops with a notice; continue in the private chat
+- Replies longer than one Telegram message are shortened; the full answer stays in the guest session
+- The wait is limited by `SCHEDULED_TASK_EXECUTION_TIMEOUT_MINUTES`
+
 ## Track Existing Session
 
 After you create a new session, select an existing one, or let the bot auto-create one from your first prompt, the bot automatically starts tracking that session. It follows live events from the same OpenCode session, shows external text input sent from another client, and lets you continue the same session from Telegram.
@@ -247,6 +259,7 @@ Configuration can be provided through process environment variables or an `.env`
 | `TELEGRAM_API_ROOT`                        | Custom Telegram Bot API root URL (e.g. nginx reverse-proxying `api.telegram.org`); applied to API calls and file downloads | No | `https://api.telegram.org` |
 | `TELEGRAM_PROXY_SECRET`                    | Shared secret sent as `X-Proxy-Secret` header on every Bot API request and file download (used with `TELEGRAM_API_ROOT`) | No | —                        |
 | `TELEGRAM_FORCE_IPV4`                      | Force IPv4 for direct Telegram API and file requests; useful when IPv6 DNS works but outbound IPv6 is broken           |    No    | `false`                  |
+| `TELEGRAM_GUEST_MODE`                      | Answer your @mentions in chats the bot never joined; see [Guest Mode](#guest-mode)                                    |    No    | `false`                  |
 | `OPENCODE_SERVER_VERSION`                  | OpenCode server API version: `v1` or `v2`; must match the server you run; set by the setup wizard                     |    No    | `v1`                     |
 | `OPENCODE_API_URL`                         | OpenCode server URL                                                                                                   |    No    | `http://localhost:4096` (V1), `http://127.0.0.1:49374` (V2) |
 | `OPENCODE_AUTO_RESTART_ENABLED`            | Automatically restart a local OpenCode server when health-checks fail                                                 |    No    | `false`                  |

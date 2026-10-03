@@ -257,6 +257,8 @@ export const config = {
     messageMergeWindowMs: getOptionalNonNegativeIntEnvVar("MESSAGE_MERGE_WINDOW_MS", 1500),
     initialSettingsPreset: parseInitialSettingsPreset(),
     excludedProjectPaths: getOptionalPathListEnvVar("PROJECTS_EXCLUDED_PATHS"),
+    // Answer @mentions from chats the bot never joined (Telegram guest bots, Bot API 10.0).
+    guestMode: getOptionalBooleanEnvVar("TELEGRAM_GUEST_MODE", false),
   },
   files: {
     maxFileSizeKb: parseInt(getEnvVar("CODE_FILE_MAX_SIZE_KB", false) || "100", 10),

@@ -589,6 +589,17 @@ export const pt: I18nDictionary = {
   "task.run.error.interactive_permission":
     "A tarefa agendada solicitou uma permissão interativa e não pode continuar sem supervisão.",
 
+  "guest.thinking": "⏳ Pensando…",
+  "guest.working": "⏳ Trabalhando… {elapsed}",
+  "guest.busy": "Ainda estou trabalhando no pedido anterior deste chat. Tente novamente quando terminar.",
+  "guest.empty": "Mencione-me com um pedido, por exemplo: @bot o que este repositório faz?",
+  "guest.command_unsupported": "Comandos não funcionam em chats de convidado. Abra um chat privado com o bot para usá-los.",
+  "guest.unsupported_message": "Apenas pedidos de texto funcionam em chats de convidado.",
+  "guest.error.no_project": "Primeiro selecione um projeto no chat privado com o bot.",
+  "guest.error.interactive": "O OpenCode pediu uma permissão ou fez uma pergunta que não pode ser respondida em um chat de convidado. Continue no chat privado com o bot.",
+  "guest.error.generic": "Algo deu errado ao responder. Os detalhes estão no log do bot.",
+  "guest.truncated": "(Resposta encurtada. A resposta completa está na sessão de convidado no chat privado.)",
+
   "tasklist.empty": "📭 Ainda não há tarefas agendadas.",
   "tasklist.select": "Selecione uma tarefa agendada:",
   "tasklist.details":
