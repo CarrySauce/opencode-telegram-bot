@@ -125,4 +125,24 @@ describe("bot/middleware/auth", () => {
     );
     expect(setMyCommands).not.toHaveBeenCalled();
   });
+
+  it("tells a foreign user their tap on a guest-mode button is not theirs", async () => {
+    const { ctx, setMyCommands } = createContext({ id: 999, is_bot: false }, -100123);
+    const answerCallbackQuery = vi.fn().mockResolvedValue(true);
+    Object.assign(ctx, {
+      chat: undefined,
+      message: undefined,
+      callbackQuery: { id: "cb", data: "gcon:0", inline_message_id: "inline-1" },
+      answerCallbackQuery,
+    });
+    const next = vi.fn();
+
+    await authMiddleware(ctx, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(answerCallbackQuery).toHaveBeenCalledWith({
+      text: "Only the bot owner can use these buttons.",
+    });
+    expect(setMyCommands).not.toHaveBeenCalled();
+  });
 });

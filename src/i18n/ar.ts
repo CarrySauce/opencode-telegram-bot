@@ -567,6 +567,12 @@ export const ar: I18nDictionary = {
   "guest.error.interactive": "طلب OpenCode صلاحية أو سؤالًا لا يمكن الإجابة عنه من دردشة الضيف. تابع في الدردشة الخاصة مع البوت.",
   "guest.error.generic": "حدث خطأ أثناء الإجابة. التفاصيل في سجل البوت.",
   "guest.truncated": "(تم اختصار الرد. الإجابة الكاملة في جلسة الضيف في الدردشة الخاصة.)",
+  "guest.connect.pick": "🔗 اختر جلسة لمتابعتها في هذه الدردشة:",
+  "guest.connect.none": "لا توجد جلسات تطابق “{query}”.",
+  "guest.connect.connecting": "🔗 جارٍ الاتصال بـ {title}…",
+  "guest.connect.no_reply": "🔗 تم الاتصال. لا يوجد رد في الجلسة بعد: رد على هذه الرسالة لمتابعتها هنا.",
+  "guest.connect.expired": "انتهت صلاحية هذه القائمة. أرسل connect مرة أخرى.",
+  "guest.connect.not_allowed": "مالك البوت فقط يمكنه استخدام هذه الأزرار.",
   "tasklist.empty": "📭 لا توجد مهام مجدولة حتى الآن.",
   "tasklist.select": "اختر مهمة مجدولة:",
   "tasklist.details":

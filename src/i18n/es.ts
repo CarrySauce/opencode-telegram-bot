@@ -600,6 +600,12 @@ export const es: I18nDictionary = {
   "guest.error.interactive": "OpenCode pidió un permiso o hizo una pregunta que no se puede responder desde un chat de invitado. Continúa en el chat privado con el bot.",
   "guest.error.generic": "Algo salió mal al responder. Los detalles están en el registro del bot.",
   "guest.truncated": "(Respuesta acortada. La respuesta completa está en la sesión de invitado del chat privado.)",
+  "guest.connect.pick": "🔗 Elige una sesión para continuarla en este chat:",
+  "guest.connect.none": "Ninguna sesión coincide con «{query}».",
+  "guest.connect.connecting": "🔗 Conectando con {title}…",
+  "guest.connect.no_reply": "🔗 Conectado. La sesión aún no tiene respuesta: responde a este mensaje para continuarla aquí.",
+  "guest.connect.expired": "Esta lista caducó. Envía connect de nuevo.",
+  "guest.connect.not_allowed": "Solo el propietario del bot puede usar estos botones.",
 
   "tasklist.empty": "📭 Aún no hay tareas programadas.",
   "tasklist.select": "Elige una tarea programada:",

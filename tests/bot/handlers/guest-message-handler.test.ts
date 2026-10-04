@@ -5,6 +5,9 @@ import { t } from "../../../src/i18n/index.js";
 const mocked = vi.hoisted(() => ({
   runGuestPromptMock: vi.fn(),
   findGuestThreadMock: vi.fn(),
+  searchGuestSessionsMock: vi.fn(),
+  connectGuestThreadMock: vi.fn(),
+  watchGuestSessionMock: vi.fn(),
   describeGuestActivityMock: vi.fn(),
   isGuestThreadRunningMock: vi.fn(),
   config: { bot: { messageFormatMode: "markdown" } },
@@ -25,6 +28,9 @@ vi.mock("../../../src/app/services/guest-session-service.js", async (importOrigi
     ...actual,
     runGuestPrompt: mocked.runGuestPromptMock,
     findGuestThread: mocked.findGuestThreadMock,
+    searchGuestSessions: mocked.searchGuestSessionsMock,
+    connectGuestThread: mocked.connectGuestThreadMock,
+    watchGuestSession: mocked.watchGuestSessionMock,
     describeGuestActivity: mocked.describeGuestActivityMock,
     isGuestThreadRunning: mocked.isGuestThreadRunningMock,
   };
@@ -32,10 +38,14 @@ vi.mock("../../../src/app/services/guest-session-service.js", async (importOrigi
 
 import {
   __resetGuestMessageHandlerForTests,
+  handleGuestConnectCallback,
   handleGuestMessage,
   runGuestTurn,
 } from "../../../src/bot/handlers/guest-message-handler.js";
-import { GuestNoProjectError } from "../../../src/app/services/guest-session-service.js";
+import {
+  GuestNoProjectError,
+  type GuestSessionRef,
+} from "../../../src/app/services/guest-session-service.js";
 import { ScheduledTaskInteractiveRequestError } from "../../../src/app/services/scheduled-task-executor-service.js";
 import type { GuestThreadInfo } from "../../../src/app/types/settings.js";
 
@@ -50,6 +60,10 @@ const THREAD: GuestThreadInfo = {
   messageIds: [],
   updatedAt: "2026-10-01T00:00:00.000Z",
 };
+
+// Runs the turn the way a guest message does, through the mocked prompt.
+const promptRunner = (onSessionReady: (session: GuestSessionRef) => void) =>
+  mocked.runGuestPromptMock("1", undefined, "hi", onSessionReady) as Promise<string>;
 
 function pendingReply(): { promise: Promise<string>; finish: (reply: string) => void } {
   let finish: (reply: string) => void = () => {};
@@ -307,7 +321,7 @@ describe("bot/handlers/guest-message-handler", () => {
       mocked.runGuestPromptMock.mockRejectedValue(error);
       const api = createApi();
 
-      await runGuestTurn(api as unknown as Api, "inline-1", "1", undefined, "hi");
+      await runGuestTurn(api as unknown as Api, "inline-1", "1", promptRunner);
 
       expect(api.editMessageTextInline).toHaveBeenCalledWith("inline-1", t(key));
     });
@@ -317,7 +331,7 @@ describe("bot/handlers/guest-message-handler", () => {
       mocked.runGuestPromptMock.mockResolvedValue("x".repeat(5000));
       const api = createApi();
 
-      await runGuestTurn(api as unknown as Api, "inline-1", "1", undefined, "hi");
+      await runGuestTurn(api as unknown as Api, "inline-1", "1", promptRunner);
 
       const text = api.editMessageTextInline.mock.calls[0]?.[1] as string;
       expect(text.length).toBeLessThanOrEqual(4096);
@@ -342,7 +356,7 @@ describe("bot/handlers/guest-message-handler", () => {
       mocked.config.bot.messageFormatMode = "raw";
       const api = createApi();
 
-      const turn = runGuestTurn(api as unknown as Api, "inline-1", "1", undefined, "hi");
+      const turn = runGuestTurn(api as unknown as Api, "inline-1", "1", promptRunner);
       await vi.advanceTimersByTimeAsync(10_000);
 
       expect(mocked.describeGuestActivityMock).toHaveBeenCalledWith({
@@ -369,7 +383,7 @@ describe("bot/handlers/guest-message-handler", () => {
       mocked.config.bot.messageFormatMode = "raw";
       const api = createApi();
 
-      const turn = runGuestTurn(api as unknown as Api, "inline-1", "1", undefined, "hi");
+      const turn = runGuestTurn(api as unknown as Api, "inline-1", "1", promptRunner);
       await vi.advanceTimersByTimeAsync(10_000);
 
       expect(mocked.describeGuestActivityMock).not.toHaveBeenCalled();
@@ -400,7 +414,7 @@ describe("bot/handlers/guest-message-handler", () => {
       mocked.config.bot.messageFormatMode = "raw";
       const api = createApi();
 
-      const turn = runGuestTurn(api as unknown as Api, "inline-1", "1", undefined, "hi");
+      const turn = runGuestTurn(api as unknown as Api, "inline-1", "1", promptRunner);
       await vi.advanceTimersByTimeAsync(10_000);
       pending.finish("done");
       await vi.advanceTimersByTimeAsync(0);
@@ -409,6 +423,144 @@ describe("bot/handlers/guest-message-handler", () => {
 
       expect(api.editMessageTextInline).toHaveBeenCalledTimes(1);
       expect(api.editMessageTextInline).toHaveBeenLastCalledWith("inline-1", "done");
+    });
+  });
+
+  describe("connect", () => {
+    const SESSIONS = [
+      { id: "ses-a", title: "Check VMs on the host", directory: "/home/alex/infra" },
+      { id: "ses-b", title: "vm migration", directory: "C:\\work\\dm" },
+    ];
+
+    function createTapContext(
+      api: ReturnType<typeof createApi>,
+      data: string,
+      inlineMessageId = "inline-1",
+    ): { ctx: Context; answerCallbackQuery: ReturnType<typeof vi.fn> } {
+      const answerCallbackQuery = vi.fn().mockResolvedValue(true);
+      const ctx = {
+        api,
+        callbackQuery: { id: "cb-1", data, inline_message_id: inlineMessageId },
+        answerCallbackQuery,
+      } as unknown as Context;
+      return { ctx, answerCallbackQuery };
+    }
+
+    it("offers the sessions the search found as buttons", async () => {
+      mocked.searchGuestSessionsMock.mockResolvedValue(SESSIONS);
+      const api = createApi();
+
+      await handleGuestMessage(createContext(api, { text: "@opencode_bot connect vm" }));
+
+      expect(mocked.searchGuestSessionsMock).toHaveBeenCalledWith("vm");
+      expect(mocked.runGuestPromptMock).not.toHaveBeenCalled();
+      const result = api.answerGuestQuery.mock.calls[0]?.[1];
+      expect(result.input_message_content.message_text).toBe(t("guest.connect.pick"));
+      expect(result.reply_markup.inline_keyboard).toEqual([
+        [{ text: "Check VMs on the host · infra", callback_data: "gcon:0" }],
+        [{ text: "vm migration · dm", callback_data: "gcon:1" }],
+      ]);
+    });
+
+    it("lists recent sessions for a bare connect", async () => {
+      mocked.searchGuestSessionsMock.mockResolvedValue(SESSIONS);
+      const api = createApi();
+
+      await handleGuestMessage(createContext(api, { text: "@opencode_bot Connect" }));
+
+      expect(mocked.searchGuestSessionsMock).toHaveBeenCalledWith("");
+    });
+
+    it("says so when no session matches", async () => {
+      mocked.searchGuestSessionsMock.mockResolvedValue([]);
+      const api = createApi();
+
+      await handleGuestMessage(createContext(api, { text: "@opencode_bot connect nothing" }));
+
+      expect(answeredText(api)).toBe(t("guest.connect.none", { query: "nothing" }));
+    });
+
+    it("connects the tapped session and turns the list into its reply", async () => {
+      mocked.searchGuestSessionsMock.mockResolvedValue(SESSIONS);
+      mocked.connectGuestThreadMock.mockResolvedValue(THREAD);
+      mocked.watchGuestSessionMock.mockResolvedValue("All VMs are running.");
+      mocked.config.bot.messageFormatMode = "raw";
+      const api = createApi();
+      await handleGuestMessage(createContext(api, { text: "@opencode_bot connect vm" }));
+
+      const { ctx, answerCallbackQuery } = createTapContext(api, "gcon:1");
+      await handleGuestConnectCallback(ctx);
+
+      expect(answerCallbackQuery).toHaveBeenCalledWith();
+      expect(mocked.connectGuestThreadMock).toHaveBeenCalledWith(
+        String(GUEST_CHAT_ID),
+        SESSIONS[1],
+      );
+      expect(api.editMessageTextInline).toHaveBeenCalledWith(
+        "inline-1",
+        t("guest.connect.connecting", { title: "vm migration" }),
+      );
+      await vi.waitFor(() =>
+        expect(api.editMessageTextInline).toHaveBeenLastCalledWith(
+          "inline-1",
+          "All VMs are running.",
+        ),
+      );
+      expect(mocked.watchGuestSessionMock).toHaveBeenCalledWith(
+        String(GUEST_CHAT_ID),
+        THREAD,
+        expect.any(Function),
+      );
+    });
+
+    it("answers a tap on a list it no longer has as expired", async () => {
+      mocked.searchGuestSessionsMock.mockResolvedValue(SESSIONS);
+      mocked.connectGuestThreadMock.mockResolvedValue(THREAD);
+      mocked.watchGuestSessionMock.mockResolvedValue("ok");
+      const api = createApi();
+      await handleGuestMessage(createContext(api, { text: "@opencode_bot connect vm" }));
+      await handleGuestConnectCallback(createTapContext(api, "gcon:0").ctx);
+
+      // The list was used up by the first tap.
+      const second = createTapContext(api, "gcon:1");
+      await handleGuestConnectCallback(second.ctx);
+      const unknown = createTapContext(api, "gcon:0", "inline-unknown");
+      await handleGuestConnectCallback(unknown.ctx);
+
+      expect(second.answerCallbackQuery).toHaveBeenCalledWith({ text: t("guest.connect.expired") });
+      expect(unknown.answerCallbackQuery).toHaveBeenCalledWith({
+        text: t("guest.connect.expired"),
+      });
+      expect(mocked.connectGuestThreadMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("tells a tap to wait when the session is already followed in this chat", async () => {
+      mocked.searchGuestSessionsMock.mockResolvedValue(SESSIONS);
+      mocked.connectGuestThreadMock.mockResolvedValue(THREAD);
+      mocked.isGuestThreadRunningMock.mockReturnValue(true);
+      const api = createApi();
+      await handleGuestMessage(createContext(api, { text: "@opencode_bot connect vm" }));
+
+      await handleGuestConnectCallback(createTapContext(api, "gcon:0").ctx);
+
+      expect(api.editMessageTextInline).toHaveBeenCalledWith("inline-1", t("guest.busy"));
+      expect(mocked.watchGuestSessionMock).not.toHaveBeenCalled();
+    });
+
+    it("reports a session with no reply yet", async () => {
+      const { GuestNoReplyError } =
+        await import("../../../src/app/services/guest-session-service.js");
+      mocked.watchGuestSessionMock.mockRejectedValue(new GuestNoReplyError());
+      const api = createApi();
+
+      await runGuestTurn(api as unknown as Api, "inline-1", "1", (ready) =>
+        mocked.watchGuestSessionMock("1", THREAD, ready),
+      );
+
+      expect(api.editMessageTextInline).toHaveBeenCalledWith(
+        "inline-1",
+        t("guest.connect.no_reply"),
+      );
     });
   });
 });

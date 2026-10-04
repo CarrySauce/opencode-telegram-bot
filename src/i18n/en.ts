@@ -579,6 +579,12 @@ export const en = {
   "guest.error.interactive": "OpenCode asked for a permission or a question, which can't be answered from a guest chat. Continue in the private chat with the bot.",
   "guest.error.generic": "Something went wrong while answering. Details are in the bot log.",
   "guest.truncated": "(Reply shortened. The full answer is in the guest session in the private chat.)",
+  "guest.connect.pick": "🔗 Pick a session to continue in this chat:",
+  "guest.connect.none": "No sessions match “{query}”.",
+  "guest.connect.connecting": "🔗 Connecting to {title}…",
+  "guest.connect.no_reply": "🔗 Connected. The session has no reply yet: reply to this message to continue it here.",
+  "guest.connect.expired": "This list has expired. Send connect again.",
+  "guest.connect.not_allowed": "Only the bot owner can use these buttons.",
 
   "tasklist.empty": "📭 No scheduled tasks yet.",
   "tasklist.select": "Select a scheduled task:",

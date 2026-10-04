@@ -583,6 +583,12 @@ export const tr: I18nDictionary = {
   "guest.error.interactive": "OpenCode, misafir sohbetinden yanıtlanamayan bir izin ya da soru istedi. Bot ile özel sohbette devam et.",
   "guest.error.generic": "Yanıtlarken bir sorun oluştu. Ayrıntılar bot günlüğünde.",
   "guest.truncated": "(Yanıt kısaltıldı. Tam yanıt özel sohbetteki misafir oturumunda.)",
+  "guest.connect.pick": "🔗 Bu sohbette devam etmek için bir oturum seç:",
+  "guest.connect.none": "“{query}” ile eşleşen oturum yok.",
+  "guest.connect.connecting": "🔗 {title} oturumuna bağlanılıyor…",
+  "guest.connect.no_reply": "🔗 Bağlandı. Oturumda henüz yanıt yok: burada devam etmek için bu mesajı yanıtla.",
+  "guest.connect.expired": "Bu listenin süresi doldu. connect'i tekrar gönder.",
+  "guest.connect.not_allowed": "Bu düğmeleri yalnızca bot sahibi kullanabilir.",
 
   "tasklist.empty": "📭 Henüz zamanlanmış görev yok.",
   "tasklist.select": "Bir zamanlanmış görev seçin:",

@@ -675,6 +675,22 @@ describe("app/services/scheduled-task-executor-service", () => {
     expect(mocked.messagesMock).not.toHaveBeenCalled();
   });
 
+  it("leaves a watched session's pending request alone and stops waiting", async () => {
+    const { waitForScheduledTaskResult, ScheduledTaskInteractiveRequestError } = await import(
+      "../../../src/app/services/scheduled-task-executor-service.js"
+    );
+    mocked.permissionListMock.mockResolvedValueOnce({
+      data: [{ id: "permission-1", sessionID: "session-1", permission: "bash", patterns: [] }],
+      error: null,
+    });
+
+    await expect(
+      waitForScheduledTaskResult("guest:-100", "session-1", "/infra", { rejectInteractive: false }),
+    ).rejects.toBeInstanceOf(ScheduledTaskInteractiveRequestError);
+    expect(mocked.permissionReplyMock).not.toHaveBeenCalled();
+    expect(mocked.abortMock).not.toHaveBeenCalled();
+  });
+
   it("ignores pending interactive requests for other sessions", async () => {
     const { executeScheduledTask } = await import("../../../src/app/services/scheduled-task-executor-service.js");
 

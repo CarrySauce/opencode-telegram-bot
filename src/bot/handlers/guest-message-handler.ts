@@ -1,16 +1,21 @@
 import type { Api, Context } from "grammy";
-import type { InlineQueryResultArticle, Message } from "grammy/types";
+import type { InlineKeyboardMarkup, InlineQueryResultArticle, Message } from "grammy/types";
 import { config } from "../../config.js";
 import { formatDuration } from "../../app/formatters/duration-formatter.js";
 import {
+  connectGuestThread,
   describeGuestActivity,
   findGuestThread,
   GuestNoProjectError,
+  GuestNoReplyError,
   isGuestThreadRunning,
   runGuestPrompt,
+  searchGuestSessions,
+  watchGuestSession,
   type GuestReplyTarget,
   type GuestSessionRef,
 } from "../../app/services/guest-session-service.js";
+import type { SessionInfo } from "../../app/types/session.js";
 import type { GuestThreadInfo } from "../../app/types/settings.js";
 import { ScheduledTaskInteractiveRequestError } from "../../app/services/scheduled-task-executor-service.js";
 import { t } from "../../i18n/index.js";
@@ -37,13 +42,41 @@ function changeActiveTurns(chatId: string, delta: number): void {
   }
 }
 
-function textArticle(text: string): InlineQueryResultArticle {
+// `@bot connect <search>` lists sessions to continue in the guest chat; a tap carries this prefix.
+const CONNECT_PATTERN = /^connect(?:\s+([\s\S]*))?$/i;
+export const GUEST_CONNECT_CALLBACK_PREFIX = "gcon:";
+const CONNECT_BUTTON_TITLE_CHARS = 40;
+// Session lists waiting for a tap, by the inline message they are drawn on. In memory: after a
+// restart a tap is answered as expired and the list is asked for again.
+const MAX_PENDING_CONNECTS = 50;
+
+interface PendingConnect {
+  chatId: string;
+  sessions: SessionInfo[];
+}
+
+const pendingConnects = new Map<string, PendingConnect>();
+
+function textArticle(text: string, replyMarkup?: InlineKeyboardMarkup): InlineQueryResultArticle {
   return {
     type: "article",
     id: "reply",
     title: text.slice(0, 64),
     input_message_content: { message_text: text },
+    ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
   };
+}
+
+function folderName(directory: string): string {
+  return directory.split(/[\\/]/).filter(Boolean).pop() ?? directory;
+}
+
+function connectButtonLabel(session: SessionInfo): string {
+  const title =
+    session.title.length > CONNECT_BUTTON_TITLE_CHARS
+      ? `${session.title.slice(0, CONNECT_BUTTON_TITLE_CHARS - 1)}…`
+      : session.title;
+  return `${title} · ${folderName(session.directory)}`;
 }
 
 function stripBotMention(text: string, botUsername: string | undefined): string {
@@ -135,19 +168,23 @@ function describeGuestError(error: unknown): string {
   if (error instanceof GuestNoProjectError) {
     return t("guest.error.no_project");
   }
+  if (error instanceof GuestNoReplyError) {
+    return t("guest.connect.no_reply");
+  }
   if (error instanceof ScheduledTaskInteractiveRequestError) {
     return t("guest.error.interactive");
   }
   return t("guest.error.generic");
 }
 
-/** Runs the prompt and keeps the guest placeholder up to date until the reply replaces it. */
+type GuestTurnRunner = (onSessionReady: (session: GuestSessionRef) => void) => Promise<string>;
+
+/** Runs a guest turn and keeps the guest placeholder up to date until the reply replaces it. */
 export async function runGuestTurn(
   api: Api,
   inlineMessageId: string,
   chatId: string,
-  thread: GuestThreadInfo | undefined,
-  text: string,
+  runTurn: GuestTurnRunner,
 ): Promise<void> {
   const startedAt = Date.now();
   let session: GuestSessionRef | undefined;
@@ -187,7 +224,7 @@ export async function runGuestTurn(
   };
 
   try {
-    const reply = await runGuestPrompt(chatId, thread, text, (readySession) => {
+    const reply = await runTurn((readySession) => {
       session = readySession;
     });
     await stopProgress();
@@ -241,6 +278,13 @@ export async function handleGuestMessage(ctx: Context): Promise<void> {
     await answerWithText(ctx, guestQueryId, t("guest.command_unsupported"));
     return;
   }
+
+  const connectMatch = CONNECT_PATTERN.exec(request);
+  if (connectMatch) {
+    await offerSessionsToConnect(ctx, guestQueryId, chatId, connectMatch[1]?.trim() ?? "");
+    return;
+  }
+
   const text = [quotedContext, request].filter(Boolean).join("\n\n");
 
   // A reply to one of the bot's messages continues that conversation; anything else starts one.
@@ -272,10 +316,113 @@ export async function handleGuestMessage(ctx: Context): Promise<void> {
   // Long polling handles updates one at a time, so the turn must not hold up the update loop.
   safeBackgroundTask({
     taskName: "guest.turn",
-    task: () => runGuestTurn(ctx.api, inlineMessageId, chatId, thread, text),
+    task: () =>
+      runGuestTurn(ctx.api, inlineMessageId, chatId, (onSessionReady) =>
+        runGuestPrompt(chatId, thread, text, onSessionReady),
+      ),
+  });
+}
+
+/** Answers `connect <search>` with the matching sessions as buttons. */
+async function offerSessionsToConnect(
+  ctx: Context,
+  guestQueryId: string,
+  chatId: string,
+  query: string,
+): Promise<void> {
+  let sessions: SessionInfo[];
+  try {
+    sessions = await searchGuestSessions(query);
+  } catch (error) {
+    logger.error(`[Guest] Session search failed: chatId=${chatId}`, error);
+    await answerWithText(ctx, guestQueryId, t("guest.error.generic"));
+    return;
+  }
+
+  if (sessions.length === 0) {
+    await answerWithText(ctx, guestQueryId, t("guest.connect.none", { query }));
+    return;
+  }
+
+  const keyboard: InlineKeyboardMarkup = {
+    inline_keyboard: sessions.map((session, index) => [
+      {
+        text: connectButtonLabel(session),
+        callback_data: `${GUEST_CONNECT_CALLBACK_PREFIX}${index}`,
+      },
+    ]),
+  };
+  try {
+    const sent = await ctx.api.answerGuestQuery(
+      guestQueryId,
+      textArticle(t("guest.connect.pick"), keyboard),
+    );
+    pendingConnects.set(sent.inline_message_id, { chatId, sessions });
+    while (pendingConnects.size > MAX_PENDING_CONNECTS) {
+      pendingConnects.delete(pendingConnects.keys().next().value as string);
+    }
+    logger.info(`[Guest] Offered ${sessions.length} sessions to connect: chatId=${chatId}`);
+  } catch (error) {
+    logger.warn(`[Guest] Could not offer sessions to connect: chatId=${chatId}`, error);
+  }
+}
+
+/**
+ * A tap on a session from `connect`. Only the owner gets here: the auth middleware drops anyone
+ * else's tap. The list message becomes the connected session's progress, then its reply.
+ */
+export async function handleGuestConnectCallback(ctx: Context): Promise<void> {
+  const inlineMessageId = ctx.callbackQuery?.inline_message_id;
+  const index = Number((ctx.callbackQuery?.data ?? "").slice(GUEST_CONNECT_CALLBACK_PREFIX.length));
+  const pending = inlineMessageId ? pendingConnects.get(inlineMessageId) : undefined;
+  const session = pending?.sessions[index];
+  if (!inlineMessageId || !pending || !session) {
+    await ctx.answerCallbackQuery({ text: t("guest.connect.expired") }).catch(() => {});
+    return;
+  }
+
+  const { chatId } = pending;
+  if ((activeTurnsByChat.get(chatId) ?? 0) >= MAX_CONCURRENT_TURNS_PER_CHAT) {
+    await ctx.answerCallbackQuery({ text: t("guest.too_many") }).catch(() => {});
+    return;
+  }
+
+  pendingConnects.delete(inlineMessageId);
+  await ctx.answerCallbackQuery().catch(() => {});
+
+  let thread: GuestThreadInfo;
+  try {
+    thread = await connectGuestThread(chatId, session);
+  } catch (error) {
+    logger.error(`[Guest] Could not connect session: chatId=${chatId}`, error);
+    await editGuestMessage(ctx.api, inlineMessageId, t("guest.error.generic")).catch(() => {});
+    return;
+  }
+  if (isGuestThreadRunning(thread)) {
+    await editGuestMessage(ctx.api, inlineMessageId, t("guest.busy")).catch(() => {});
+    return;
+  }
+
+  changeActiveTurns(chatId, 1);
+  await editGuestMessage(
+    ctx.api,
+    inlineMessageId,
+    t("guest.connect.connecting", { title: session.title }),
+  ).catch((error) => {
+    logger.debug(`[Guest] Could not show connecting state: chatId=${chatId}`, error);
+  });
+  logger.info(`[Guest] Session connected: chatId=${chatId}, sessionId=${session.id}`);
+
+  safeBackgroundTask({
+    taskName: "guest.connect",
+    task: () =>
+      runGuestTurn(ctx.api, inlineMessageId, chatId, (onSessionReady) =>
+        watchGuestSession(chatId, thread, onSessionReady),
+      ),
   });
 }
 
 export function __resetGuestMessageHandlerForTests(): void {
   activeTurnsByChat.clear();
+  pendingConnects.clear();
 }

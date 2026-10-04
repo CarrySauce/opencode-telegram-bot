@@ -602,6 +602,12 @@ export const de: I18nDictionary = {
   "guest.error.interactive": "OpenCode hat eine Berechtigung oder eine Frage angefordert, die aus einem Gast-Chat nicht beantwortet werden kann. Mach im privaten Chat mit dem Bot weiter.",
   "guest.error.generic": "Beim Antworten ist etwas schiefgelaufen. Details stehen im Bot-Log.",
   "guest.truncated": "(Antwort gekürzt. Die vollständige Antwort steht in der Gast-Sitzung im privaten Chat.)",
+  "guest.connect.pick": "🔗 Wähle eine Sitzung, die in diesem Chat weitergehen soll:",
+  "guest.connect.none": "Keine Sitzungen passen zu „{query}“.",
+  "guest.connect.connecting": "🔗 Verbinde mit {title}…",
+  "guest.connect.no_reply": "🔗 Verbunden. Die Sitzung hat noch keine Antwort: Antworte auf diese Nachricht, um sie hier fortzusetzen.",
+  "guest.connect.expired": "Diese Liste ist abgelaufen. Sende connect erneut.",
+  "guest.connect.not_allowed": "Nur der Besitzer des Bots kann diese Schaltflächen verwenden.",
 
   "tasklist.empty": "📭 Noch keine geplanten Aufgaben.",
   "tasklist.select": "Wähle eine geplante Aufgabe:",

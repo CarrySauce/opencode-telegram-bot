@@ -9,6 +9,7 @@ const fake = vi.hoisted(() => ({
     server: { info: vi.fn() },
     session: {
       get: vi.fn(),
+      list: vi.fn(),
       switchAgent: vi.fn(),
       switchModel: vi.fn(),
       prompt: vi.fn(),
@@ -222,6 +223,24 @@ describe("opencode/v2/client", () => {
       sessionID: "ses-1",
       inboxID: "msg-a",
     });
+  });
+
+  it("searches sessions of every project by title", async () => {
+    fake.client.session.list.mockResolvedValue({ data: [SESSION] });
+
+    const result = await createClient().experimental.session.list({
+      roots: true,
+      limit: 8,
+      search: "vm",
+    });
+
+    expect(fake.client.session.list).toHaveBeenCalledWith({
+      order: "desc",
+      limit: 8,
+      search: "vm",
+      parentID: null,
+    });
+    expect(result.data?.map((session) => session.id)).toEqual(["ses-1"]);
   });
 
   it("reloads the server configuration", async () => {

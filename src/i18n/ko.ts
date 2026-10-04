@@ -589,6 +589,12 @@ export const ko: I18nDictionary = {
   "guest.error.interactive": "OpenCode가 게스트 채팅에서 답할 수 없는 권한 요청이나 질문을 보냈습니다. 봇과의 개인 채팅에서 계속하세요.",
   "guest.error.generic": "답변하는 중 문제가 발생했습니다. 자세한 내용은 봇 로그를 확인하세요.",
   "guest.truncated": "(답변이 축약되었습니다. 전체 답변은 개인 채팅의 게스트 세션에 있습니다.)",
+  "guest.connect.pick": "🔗 이 채팅에서 이어갈 세션을 선택하세요:",
+  "guest.connect.none": "“{query}”와 일치하는 세션이 없습니다.",
+  "guest.connect.connecting": "🔗 {title}에 연결하는 중…",
+  "guest.connect.no_reply": "🔗 연결되었습니다. 세션에 아직 답변이 없습니다: 이 메시지에 답장하면 여기서 이어갈 수 있습니다.",
+  "guest.connect.expired": "이 목록은 만료되었습니다. connect를 다시 보내세요.",
+  "guest.connect.not_allowed": "봇 소유자만 이 버튼을 사용할 수 있습니다.",
 
   "tasklist.empty": "📭 아직 예약 작업이 없습니다.",
   "tasklist.select": "예약 작업을 선택하세요:",

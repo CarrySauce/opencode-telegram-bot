@@ -347,10 +347,16 @@ async function failIfInteractiveRequest(
   taskId: string,
   sessionId: string,
   directory: string,
+  rejectInteractive: boolean,
 ): Promise<void> {
   const interactiveRequest = await loadPendingInteractiveRequest(sessionId, directory);
   if (!interactiveRequest) {
     return;
+  }
+
+  // A session the bot only watches belongs to someone else: its request stays for them to answer.
+  if (!rejectInteractive) {
+    throw new ScheduledTaskInteractiveRequestError(interactiveRequest.kind);
   }
 
   logger.warn("[ScheduledTaskExecutor] Scheduled task requested interactive action", {
@@ -372,7 +378,7 @@ async function failIfInteractiveRequest(
   throw new ScheduledTaskInteractiveRequestError(interactiveRequest.kind);
 }
 
-async function loadAssistantResult(
+export async function loadAssistantResult(
   sessionId: string,
   directory: string,
 ): Promise<ReturnType<typeof extractAssistantResult>> {
@@ -392,6 +398,7 @@ export async function waitForScheduledTaskResult(
   taskId: string,
   sessionId: string,
   directory: string,
+  { rejectInteractive = true }: { rejectInteractive?: boolean } = {},
 ): Promise<string> {
   const startedAtMs = Date.now();
   const executionTimeoutMs = getExecutionTimeoutMs();
@@ -405,7 +412,7 @@ export async function waitForScheduledTaskResult(
       throw new Error(createExecutionTimeoutMessage());
     }
 
-    await failIfInteractiveRequest(taskId, sessionId, directory);
+    await failIfInteractiveRequest(taskId, sessionId, directory, rejectInteractive);
 
     const assistantResult = await loadAssistantResult(sessionId, directory);
 

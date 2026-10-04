@@ -5,6 +5,9 @@ const mocked = vi.hoisted(() => ({
   createMock: vi.fn(),
   getMock: vi.fn(),
   messagesMock: vi.fn(),
+  statusMock: vi.fn(),
+  searchMock: vi.fn(),
+  loadAssistantResultMock: vi.fn(),
   promptAsyncMock: vi.fn(),
   waitMock: vi.fn(),
   registerIgnoreMock: vi.fn(),
@@ -21,7 +24,9 @@ vi.mock("../../../src/opencode/client.js", () => ({
       get: mocked.getMock,
       messages: mocked.messagesMock,
       promptAsync: mocked.promptAsyncMock,
+      status: mocked.statusMock,
     },
+    experimental: { session: { list: mocked.searchMock } },
   },
 }));
 
@@ -52,6 +57,7 @@ vi.mock("../../../src/app/services/model-selection-service.js", () => ({
 
 vi.mock("../../../src/app/services/scheduled-task-executor-service.js", () => ({
   waitForScheduledTaskResult: mocked.waitMock,
+  loadAssistantResult: mocked.loadAssistantResultMock,
 }));
 
 vi.mock("../../../src/app/services/scheduled-task-session-ignore-service.js", () => ({
@@ -60,12 +66,16 @@ vi.mock("../../../src/app/services/scheduled-task-session-ignore-service.js", ()
 
 import {
   __resetGuestSessionsForTests,
+  connectGuestThread,
   describeGuestActivity,
   findGuestThread,
   GuestNoProjectError,
+  GuestNoReplyError,
   guestReplyKey,
   isGuestThreadRunning,
   runGuestPrompt,
+  searchGuestSessions,
+  watchGuestSession,
 } from "../../../src/app/services/guest-session-service.js";
 
 const PROJECT_DIR = "/work/repo";
@@ -354,6 +364,113 @@ describe("app/services/guest-session-service", () => {
       });
 
       await expect(describeGuestActivity(SESSION)).resolves.toBeNull();
+    });
+  });
+
+  describe("searchGuestSessions", () => {
+    it("searches root sessions of every project by title, newest first", async () => {
+      mocked.searchMock.mockResolvedValue({
+        data: [
+          { id: "old", title: "vm setup", directory: "/a", time: { updated: 1 } },
+          { id: "new", title: "vm check", directory: "/b", time: { updated: 5 } },
+        ],
+        error: undefined,
+      });
+
+      const sessions = await searchGuestSessions("vm");
+
+      expect(mocked.searchMock).toHaveBeenCalledWith({ roots: true, limit: 8, search: "vm" });
+      expect(sessions).toEqual([
+        { id: "new", title: "vm check", directory: "/b" },
+        { id: "old", title: "vm setup", directory: "/a" },
+      ]);
+    });
+
+    it("lists the latest sessions without a search term", async () => {
+      mocked.searchMock.mockResolvedValue({ data: [], error: undefined });
+
+      await searchGuestSessions("");
+
+      expect(mocked.searchMock).toHaveBeenCalledWith({ roots: true, limit: 8 });
+    });
+  });
+
+  describe("connectGuestThread", () => {
+    it("makes the session the chat's latest conversation", async () => {
+      mocked.storedThreads = [storedThread({ sessionId: "earlier" })];
+
+      await connectGuestThread(CHAT_ID, { id: "ses-vm", title: "vm", directory: "/infra" });
+
+      // A reply the bot cannot place now continues the connected session.
+      expect(findGuestThread(CHAT_ID, { messageId: 1, text: "anything" })?.sessionId).toBe(
+        "ses-vm",
+      );
+      expect(mocked.storedThreads[0]).toEqual(
+        expect.objectContaining({ chatId: CHAT_ID, sessionId: "ses-vm", directory: "/infra" }),
+      );
+    });
+
+    it("keeps what it knew about a session the chat used before", async () => {
+      mocked.storedThreads = [storedThread({ sessionId: "ses-vm", replyKeys: ["known"] })];
+
+      const thread = await connectGuestThread(CHAT_ID, {
+        id: "ses-vm",
+        title: "vm",
+        directory: PROJECT_DIR,
+      });
+
+      expect(thread.replyKeys).toEqual(["known"]);
+    });
+  });
+
+  describe("watchGuestSession", () => {
+    const thread = storedThread({ sessionId: "ses-vm", directory: "/infra" });
+
+    it("returns the last reply of an idle session", async () => {
+      mocked.statusMock.mockResolvedValue({
+        data: { "ses-vm": { type: "idle" } },
+        error: undefined,
+      });
+      mocked.loadAssistantResultMock.mockResolvedValue({ resultText: "All VMs run." });
+      const ready = vi.fn();
+
+      await expect(watchGuestSession(CHAT_ID, thread, ready)).resolves.toBe("All VMs run.");
+
+      expect(ready).toHaveBeenCalledWith({ sessionId: "ses-vm", directory: "/infra" });
+      expect(mocked.loadAssistantResultMock).toHaveBeenCalledWith("ses-vm", "/infra");
+      expect(mocked.waitMock).not.toHaveBeenCalled();
+      expect(mocked.storedThreads[0]?.replyKeys).toEqual([guestReplyKey("All VMs run.")]);
+    });
+
+    it("waits for a running session without touching its pending requests", async () => {
+      mocked.statusMock.mockResolvedValue({
+        data: { "ses-vm": { type: "busy" } },
+        error: undefined,
+      });
+      let finish: (reply: string) => void = () => {};
+      mocked.waitMock.mockReturnValue(
+        new Promise<string>((resolve) => {
+          finish = resolve;
+        }),
+      );
+
+      const watch = watchGuestSession(CHAT_ID, thread);
+      expect(isGuestThreadRunning(thread)).toBe(true);
+      await vi.waitFor(() => expect(mocked.waitMock).toHaveBeenCalled());
+      finish("Done.");
+
+      await expect(watch).resolves.toBe("Done.");
+      expect(mocked.waitMock).toHaveBeenCalledWith("guest:-100", "ses-vm", "/infra", {
+        rejectInteractive: false,
+      });
+      expect(isGuestThreadRunning(thread)).toBe(false);
+    });
+
+    it("fails with no reply when the idle session never answered", async () => {
+      mocked.statusMock.mockResolvedValue({ data: {}, error: undefined });
+      mocked.loadAssistantResultMock.mockResolvedValue({ resultText: null });
+
+      await expect(watchGuestSession(CHAT_ID, thread)).rejects.toBeInstanceOf(GuestNoReplyError);
     });
   });
 });

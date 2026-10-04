@@ -594,6 +594,12 @@ export const it: I18nDictionary = {
   "guest.error.interactive": "OpenCode ha chiesto un permesso o fatto una domanda a cui non si può rispondere da una chat ospite. Continua nella chat privata con il bot.",
   "guest.error.generic": "Qualcosa è andato storto durante la risposta. I dettagli sono nel log del bot.",
   "guest.truncated": "(Risposta abbreviata. La risposta completa è nella sessione ospite della chat privata.)",
+  "guest.connect.pick": "🔗 Scegli una sessione da continuare in questa chat:",
+  "guest.connect.none": "Nessuna sessione corrisponde a «{query}».",
+  "guest.connect.connecting": "🔗 Connessione a {title}…",
+  "guest.connect.no_reply": "🔗 Connesso. La sessione non ha ancora una risposta: rispondi a questo messaggio per continuarla qui.",
+  "guest.connect.expired": "Questo elenco è scaduto. Invia di nuovo connect.",
+  "guest.connect.not_allowed": "Solo il proprietario del bot può usare questi pulsanti.",
 
   "tasklist.empty": "📭 Nessuna attività pianificata.",
   "tasklist.select": "Seleziona un'attività pianificata:",

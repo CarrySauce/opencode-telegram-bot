@@ -535,6 +535,12 @@ export const zh: I18nDictionary = {
   "guest.error.interactive": "OpenCode 请求了权限或提出了问题，无法在访客聊天中回答。请在与机器人的私聊中继续。",
   "guest.error.generic": "回答时出现问题。详情见机器人日志。",
   "guest.truncated": "（回复已缩短。完整回答在私聊中的访客会话里。）",
+  "guest.connect.pick": "🔗 选择要在此聊天中继续的会话：",
+  "guest.connect.none": "没有与“{query}”匹配的会话。",
+  "guest.connect.connecting": "🔗 正在连接 {title}…",
+  "guest.connect.no_reply": "🔗 已连接。该会话还没有回复：回复此消息即可在这里继续。",
+  "guest.connect.expired": "此列表已过期。请重新发送 connect。",
+  "guest.connect.not_allowed": "只有机器人所有者可以使用这些按钮。",
 
   "tasklist.empty": "📭 还没有定时任务。",
   "tasklist.select": "请选择一个定时任务：",

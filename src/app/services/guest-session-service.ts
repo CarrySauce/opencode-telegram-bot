@@ -2,6 +2,7 @@ import type { ToolState } from "@opencode-ai/sdk/v2";
 import { opencodeClient } from "../../opencode/client.js";
 import { logger } from "../../utils/logger.js";
 import { getCurrentProject, getGuestThreads, setGuestThreads } from "../stores/settings-store.js";
+import type { SessionInfo } from "../types/session.js";
 import type { GuestThreadInfo } from "../types/settings.js";
 import {
   formatCompactToolActivity,
@@ -9,7 +10,10 @@ import {
 } from "../formatters/summary-formatter.js";
 import { getStoredAgent, resolveProjectAgent } from "./agent-selection-service.js";
 import { getStoredModel } from "./model-selection-service.js";
-import { waitForScheduledTaskResult } from "./scheduled-task-executor-service.js";
+import {
+  loadAssistantResult,
+  waitForScheduledTaskResult,
+} from "./scheduled-task-executor-service.js";
 import { registerScheduledTaskSessionIgnore } from "./scheduled-task-session-ignore-service.js";
 
 // Bounds on what settings.json keeps: enough to reply to anything from the last weeks of use.
@@ -23,6 +27,13 @@ const MIN_PREFIX_MATCH_CHARS = 16;
 export interface GuestReplyTarget {
   messageId: number;
   text: string;
+}
+
+export class GuestNoReplyError extends Error {
+  constructor() {
+    super("The connected session has no reply yet");
+    this.name = "GuestNoReplyError";
+  }
 }
 
 export class GuestNoProjectError extends Error {
@@ -284,6 +295,88 @@ export async function runGuestPrompt(
     if (claimedSessionId) {
       runningSessionIds.delete(claimedSessionId);
     }
+  }
+}
+
+const CONNECT_RESULTS_LIMIT = 8;
+
+/** Root sessions of every project whose title matches `query` (all of them when empty), newest first. */
+export async function searchGuestSessions(query: string): Promise<SessionInfo[]> {
+  const { data, error } = await opencodeClient.experimental.session.list({
+    roots: true,
+    limit: CONNECT_RESULTS_LIMIT,
+    ...(query ? { search: query } : {}),
+  });
+  if (error || !data) {
+    throw error || new Error("No sessions received from OpenCode");
+  }
+  return [...data]
+    .sort((left, right) => right.time.updated - left.time.updated)
+    .map(({ id, title, directory }) => ({ id, title, directory }));
+}
+
+/** Makes `session` the chat's latest conversation, so the next reply continues it. */
+export async function connectGuestThread(
+  chatId: string,
+  session: SessionInfo,
+): Promise<GuestThreadInfo> {
+  const fresh: GuestThreadInfo = {
+    chatId,
+    sessionId: session.id,
+    directory: session.directory,
+    replyKeys: [],
+    messageIds: [],
+    updatedAt: new Date().toISOString(),
+  };
+  return updateThread(fresh, () => ({}));
+}
+
+/**
+ * Follows a connected session: waits for the reply it is working on, or returns the last one it
+ * gave when it is idle. Never answers or rejects the session's pending questions: it was started
+ * elsewhere, and its owner answers them there.
+ */
+export async function watchGuestSession(
+  chatId: string,
+  thread: GuestThreadInfo,
+  onSessionReady?: (session: GuestSessionRef) => void,
+): Promise<string> {
+  runningSessionIds.add(thread.sessionId);
+  try {
+    onSessionReady?.({ sessionId: thread.sessionId, directory: thread.directory });
+
+    const { data: statuses, error } = await opencodeClient.session.status({
+      directory: thread.directory,
+    });
+    if (error || !statuses) {
+      throw error || new Error("Failed to load session status");
+    }
+
+    const status = statuses[thread.sessionId];
+    let reply: string | null;
+    if (status && status.type !== "idle") {
+      reply = await waitForScheduledTaskResult(
+        `guest:${chatId}`,
+        thread.sessionId,
+        thread.directory,
+        { rejectInteractive: false },
+      );
+    } else {
+      reply = (await loadAssistantResult(thread.sessionId, thread.directory)).resultText;
+    }
+    if (!reply) {
+      throw new GuestNoReplyError();
+    }
+
+    const replyKey = guestReplyKey(reply);
+    if (replyKey) {
+      await updateThread(thread, (stored) => ({
+        replyKeys: withNewest(stored.replyKeys, replyKey),
+      }));
+    }
+    return reply;
+  } finally {
+    runningSessionIds.delete(thread.sessionId);
   }
 }
 

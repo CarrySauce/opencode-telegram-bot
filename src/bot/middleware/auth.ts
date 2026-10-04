@@ -1,6 +1,7 @@
 import { Context, NextFunction } from "grammy";
 import { config } from "../../config.js";
 import { logger } from "../../utils/logger.js";
+import { t } from "../../i18n/index.js";
 
 export async function authMiddleware(ctx: Context, next: NextFunction): Promise<void> {
   const userId = ctx.from?.id;
@@ -18,6 +19,15 @@ export async function authMiddleware(ctx: Context, next: NextFunction): Promise<
   } else {
     // Silently ignore unauthorized users
     logger.warn(`Unauthorized access attempt from user ID: ${userId}`);
+
+    // Buttons on a guest-mode message are visible to everyone in that chat: say who they are for
+    // instead of leaving the tap spinning.
+    if (ctx.callbackQuery?.inline_message_id) {
+      await ctx
+        .answerCallbackQuery({ text: t("guest.connect.not_allowed") })
+        .catch((err: unknown) => logger.debug(`[Auth] Could not answer foreign tap: ${err}`));
+      return;
+    }
 
     // Actively hide commands for unauthorized users by setting empty command list
     // Only do this if the chat is NOT the authorized user's chat

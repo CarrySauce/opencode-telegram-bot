@@ -440,11 +440,12 @@ export function createV2OpencodeClient(options: V2ClientOptions): OpencodeClient
     },
     experimental: {
       session: {
-        list: (params: { roots?: boolean; limit?: number }) =>
+        list: (params: { roots?: boolean; limit?: number; search?: string }) =>
           run(async () => {
             const result = await client.session.list({
               order: "desc",
               ...(params.limit ? { limit: params.limit } : {}),
+              ...(params.search ? { search: params.search } : {}),
               ...(params.roots ? { parentID: null } : {}),
             });
             return result.data.map(toV1GlobalSession);

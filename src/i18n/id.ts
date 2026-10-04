@@ -579,6 +579,12 @@ export const id: I18nDictionary = {
   "guest.error.interactive": "OpenCode meminta izin atau mengajukan pertanyaan yang tidak bisa dijawab dari chat tamu. Lanjutkan di chat pribadi dengan bot.",
   "guest.error.generic": "Terjadi kesalahan saat menjawab. Detailnya ada di log bot.",
   "guest.truncated": "(Balasan dipersingkat. Jawaban lengkap ada di sesi tamu di chat pribadi.)",
+  "guest.connect.pick": "🔗 Pilih sesi untuk dilanjutkan di chat ini:",
+  "guest.connect.none": "Tidak ada sesi yang cocok dengan “{query}”.",
+  "guest.connect.connecting": "🔗 Menghubungkan ke {title}…",
+  "guest.connect.no_reply": "🔗 Terhubung. Sesi belum punya balasan: balas pesan ini untuk melanjutkannya di sini.",
+  "guest.connect.expired": "Daftar ini sudah kedaluwarsa. Kirim connect lagi.",
+  "guest.connect.not_allowed": "Hanya pemilik bot yang bisa memakai tombol ini.",
 
   "tasklist.empty": "📭 Belum ada tugas terjadwal.",
   "tasklist.select": "Pilih tugas terjadwal:",
