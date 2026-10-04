@@ -580,7 +580,8 @@ export const ko: I18nDictionary = {
 
   "guest.thinking": "⏳ 생각 중…",
   "guest.working": "⏳ 작업 중… {elapsed}",
-  "guest.busy": "이 채팅의 이전 요청을 아직 처리하고 있습니다. 끝난 뒤 다시 시도하세요.",
+  "guest.busy": "이 대화의 이전 요청을 아직 처리하고 있습니다. 끝난 뒤 다시 시도하세요.",
+  "guest.too_many": "이 채팅에서 이미 여러 요청을 처리하고 있습니다. 그중 하나가 끝난 뒤 다시 시도하세요.",
   "guest.empty": "요청과 함께 저를 멘션하세요. 예: @bot 이 저장소는 무엇을 하나요?",
   "guest.command_unsupported": "게스트 채팅에서는 명령어를 사용할 수 없습니다. 봇과의 개인 채팅에서 사용하세요.",
   "guest.unsupported_message": "게스트 채팅에서는 텍스트 요청만 사용할 수 있습니다.",

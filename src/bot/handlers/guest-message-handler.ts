@@ -1,8 +1,15 @@
 import type { Api, Context } from "grammy";
-import type { InlineQueryResultArticle } from "grammy/types";
+import type { InlineQueryResultArticle, Message } from "grammy/types";
 import { config } from "../../config.js";
 import { formatDuration } from "../../app/formatters/duration-formatter.js";
-import { GuestNoProjectError, runGuestPrompt } from "../../app/services/guest-session-service.js";
+import {
+  findGuestThread,
+  GuestNoProjectError,
+  isGuestThreadRunning,
+  runGuestPrompt,
+  type GuestReplyTarget,
+} from "../../app/services/guest-session-service.js";
+import type { GuestThreadInfo } from "../../app/types/settings.js";
 import { ScheduledTaskInteractiveRequestError } from "../../app/services/scheduled-task-executor-service.js";
 import { t } from "../../i18n/index.js";
 import { logger } from "../../utils/logger.js";
@@ -14,9 +21,19 @@ import { isTelegramBadRequestError } from "../messages/send-with-markdown-fallba
 // A guest chat has exactly one message the bot may write to, so progress is shown by editing it.
 const PROGRESS_INTERVAL_MS = 15_000;
 
-// One running turn per guest chat: a second mention would have no message of its own to answer on
-// once the first has spent the chat's placeholder, and the two would race on one session.
-const activeGuestChats = new Set<string>();
+// Conversations in one guest chat run side by side, up to this many at once.
+const MAX_CONCURRENT_TURNS_PER_CHAT = 3;
+
+const activeTurnsByChat = new Map<string, number>();
+
+function changeActiveTurns(chatId: string, delta: number): void {
+  const count = (activeTurnsByChat.get(chatId) ?? 0) + delta;
+  if (count > 0) {
+    activeTurnsByChat.set(chatId, count);
+  } else {
+    activeTurnsByChat.delete(chatId);
+  }
+}
 
 function textArticle(text: string): InlineQueryResultArticle {
   return {
@@ -32,6 +49,22 @@ function stripBotMention(text: string, botUsername: string | undefined): string 
     return text.trim();
   }
   return text.replace(new RegExp(`@${botUsername}\\b`, "gi"), "").trim();
+}
+
+/** The bot message this guest message replies to, if it replies to one. */
+function getBotReplyTarget(
+  message: Message,
+  botId: number | undefined,
+): GuestReplyTarget | undefined {
+  const replied = message.reply_to_message;
+  if (!replied || botId === undefined) {
+    return undefined;
+  }
+  // A guest bot's message is sent on the caller's behalf "via" the bot.
+  if (replied.from?.id !== botId && replied.via_bot?.id !== botId) {
+    return undefined;
+  }
+  return { messageId: replied.message_id, text: replied.text ?? replied.caption ?? "" };
 }
 
 function truncateForTelegram(text: string): string {
@@ -80,7 +113,7 @@ export async function runGuestTurn(
   api: Api,
   inlineMessageId: string,
   chatId: string,
-  chatTitle: string,
+  thread: GuestThreadInfo | undefined,
   text: string,
 ): Promise<void> {
   const startedAt = Date.now();
@@ -92,7 +125,7 @@ export async function runGuestTurn(
   }, PROGRESS_INTERVAL_MS);
 
   try {
-    const reply = await runGuestPrompt(chatId, chatTitle, text);
+    const reply = await runGuestPrompt(chatId, thread, text);
     clearInterval(progressTimer);
     await editGuestReply(api, inlineMessageId, reply);
     logger.info(`[Guest] Turn completed: chatId=${chatId}`);
@@ -103,7 +136,7 @@ export async function runGuestTurn(
       logger.warn(`[Guest] Could not report failure: chatId=${chatId}`, editError);
     });
   } finally {
-    activeGuestChats.delete(chatId);
+    changeActiveTurns(chatId, -1);
   }
 }
 
@@ -142,32 +175,40 @@ export async function handleGuestMessage(ctx: Context): Promise<void> {
     await answerWithText(ctx, guestQueryId, t("guest.command_unsupported"));
     return;
   }
-  if (activeGuestChats.has(chatId)) {
+
+  // A reply to one of the bot's messages continues that conversation; anything else starts one.
+  const thread = findGuestThread(chatId, getBotReplyTarget(message, ctx.me?.id));
+  if (thread && isGuestThreadRunning(thread)) {
     await answerWithText(ctx, guestQueryId, t("guest.busy"));
     return;
   }
+  if ((activeTurnsByChat.get(chatId) ?? 0) >= MAX_CONCURRENT_TURNS_PER_CHAT) {
+    await answerWithText(ctx, guestQueryId, t("guest.too_many"));
+    return;
+  }
 
-  activeGuestChats.add(chatId);
+  changeActiveTurns(chatId, 1);
   let inlineMessageId: string;
   try {
     const sent = await ctx.api.answerGuestQuery(guestQueryId, textArticle(t("guest.thinking")));
     inlineMessageId = sent.inline_message_id;
   } catch (error) {
-    activeGuestChats.delete(chatId);
+    changeActiveTurns(chatId, -1);
     logger.warn(`[Guest] Could not post placeholder: chatId=${chatId}`, error);
     return;
   }
 
-  const chatTitle = "title" in message.chat && message.chat.title ? message.chat.title : chatId;
-  logger.info(`[Guest] Turn started: chatId=${chatId}, length=${text.length}`);
+  logger.info(
+    `[Guest] Turn started: chatId=${chatId}, sessionId=${thread?.sessionId ?? "new"}, length=${text.length}`,
+  );
 
   // Long polling handles updates one at a time, so the turn must not hold up the update loop.
   safeBackgroundTask({
     taskName: "guest.turn",
-    task: () => runGuestTurn(ctx.api, inlineMessageId, chatId, chatTitle, text),
+    task: () => runGuestTurn(ctx.api, inlineMessageId, chatId, thread, text),
   });
 }
 
 export function __resetGuestMessageHandlerForTests(): void {
-  activeGuestChats.clear();
+  activeTurnsByChat.clear();
 }

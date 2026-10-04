@@ -570,7 +570,8 @@ export const en = {
 
   "guest.thinking": "⏳ Thinking…",
   "guest.working": "⏳ Working… {elapsed}",
-  "guest.busy": "I'm still working on the previous request in this chat. Try again when it's done.",
+  "guest.busy": "I'm still working on the previous request in this conversation. Try again when it's done.",
+  "guest.too_many": "I'm already working on several requests in this chat. Try again when one of them is done.",
   "guest.empty": "Mention me with a request, for example: @bot what does this repo do?",
   "guest.command_unsupported": "Commands don't work in guest chats. Open a private chat with the bot to use them.",
   "guest.unsupported_message": "Only text requests work in guest chats.",

@@ -593,7 +593,8 @@ export const de: I18nDictionary = {
 
   "guest.thinking": "⏳ Denke nach…",
   "guest.working": "⏳ Arbeite… {elapsed}",
-  "guest.busy": "Ich arbeite in diesem Chat noch an der vorherigen Anfrage. Versuche es erneut, wenn sie fertig ist.",
+  "guest.busy": "Ich arbeite in diesem Gespräch noch an der vorherigen Anfrage. Versuche es erneut, wenn sie fertig ist.",
+  "guest.too_many": "Ich arbeite in diesem Chat bereits an mehreren Anfragen. Versuche es erneut, wenn eine davon fertig ist.",
   "guest.empty": "Erwähne mich mit einer Anfrage, zum Beispiel: @bot was macht dieses Repo?",
   "guest.command_unsupported": "Befehle funktionieren in Gast-Chats nicht. Öffne dafür einen privaten Chat mit dem Bot.",
   "guest.unsupported_message": "In Gast-Chats funktionieren nur Textanfragen.",

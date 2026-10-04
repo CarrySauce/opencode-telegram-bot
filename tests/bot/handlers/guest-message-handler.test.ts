@@ -4,6 +4,8 @@ import { t } from "../../../src/i18n/index.js";
 
 const mocked = vi.hoisted(() => ({
   runGuestPromptMock: vi.fn(),
+  findGuestThreadMock: vi.fn(),
+  isGuestThreadRunningMock: vi.fn(),
   config: { bot: { messageFormatMode: "markdown" } },
 }));
 
@@ -18,7 +20,12 @@ vi.mock("../../../src/utils/logger.js", () => ({
 vi.mock("../../../src/app/services/guest-session-service.js", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("../../../src/app/services/guest-session-service.js")>();
-  return { ...actual, runGuestPrompt: mocked.runGuestPromptMock };
+  return {
+    ...actual,
+    runGuestPrompt: mocked.runGuestPromptMock,
+    findGuestThread: mocked.findGuestThreadMock,
+    isGuestThreadRunning: mocked.isGuestThreadRunningMock,
+  };
 });
 
 import {
@@ -28,8 +35,27 @@ import {
 } from "../../../src/bot/handlers/guest-message-handler.js";
 import { GuestNoProjectError } from "../../../src/app/services/guest-session-service.js";
 import { ScheduledTaskInteractiveRequestError } from "../../../src/app/services/scheduled-task-executor-service.js";
+import type { GuestThreadInfo } from "../../../src/app/types/settings.js";
 
 const GUEST_CHAT_ID = -100123;
+const BOT_ID = 555;
+
+const THREAD: GuestThreadInfo = {
+  chatId: String(GUEST_CHAT_ID),
+  sessionId: "session-1",
+  directory: "/work/repo",
+  replyKeys: [],
+  messageIds: [],
+  updatedAt: "2026-10-01T00:00:00.000Z",
+};
+
+function pendingReply(): { promise: Promise<string>; finish: (reply: string) => void } {
+  let finish: (reply: string) => void = () => {};
+  const promise = new Promise<string>((resolve) => {
+    finish = resolve;
+  });
+  return { promise, finish };
+}
 
 function createApi() {
   return {
@@ -44,7 +70,7 @@ function createContext(
 ): Context {
   return {
     api,
-    me: { id: 555, is_bot: true, username: "opencode_bot" },
+    me: { id: BOT_ID, is_bot: true, username: "opencode_bot" },
     guestMessage: {
       message_id: 1,
       date: 0,
@@ -64,6 +90,8 @@ describe("bot/handlers/guest-message-handler", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocked.config.bot.messageFormatMode = "markdown";
+    mocked.findGuestThreadMock.mockReturnValue(undefined);
+    mocked.isGuestThreadRunningMock.mockReturnValue(false);
     __resetGuestMessageHandlerForTests();
   });
 
@@ -81,9 +109,10 @@ describe("bot/handlers/guest-message-handler", () => {
     expect(api.answerGuestQuery.mock.calls[0]?.[0]).toBe("query-1");
     expect(answeredText(api)).toBe(t("guest.thinking"));
     await vi.waitFor(() => expect(api.editMessageTextInline).toHaveBeenCalled());
+    expect(mocked.findGuestThreadMock).toHaveBeenCalledWith(String(GUEST_CHAT_ID), undefined);
     expect(mocked.runGuestPromptMock).toHaveBeenCalledWith(
       String(GUEST_CHAT_ID),
-      "Team chat",
+      undefined,
       "what does this repo do?",
     );
     expect(api.editMessageTextInline).toHaveBeenCalledWith("inline-1", "It is a *bot*\\.", {
@@ -104,30 +133,76 @@ describe("bot/handlers/guest-message-handler", () => {
     expect(api.editMessageTextInline).toHaveBeenLastCalledWith("inline-1", "It is a **bot**.");
   });
 
-  it("tells a second mention to wait while the chat's turn is still running", async () => {
-    let finishTurn: (reply: string) => void = () => {};
-    mocked.runGuestPromptMock.mockReturnValue(
-      new Promise<string>((resolve) => {
-        finishTurn = resolve;
+  it("continues the conversation of the bot message it replies to", async () => {
+    mocked.findGuestThreadMock.mockReturnValue(THREAD);
+    mocked.runGuestPromptMock.mockResolvedValue("ok");
+    const api = createApi();
+
+    await handleGuestMessage(
+      createContext(api, {
+        text: "what did I ask before?",
+        reply_to_message: {
+          message_id: 41,
+          text: "Hello. What can I help you with?",
+          from: { id: 42, is_bot: false },
+          via_bot: { id: BOT_ID, is_bot: true },
+        },
       }),
     );
+
+    expect(mocked.findGuestThreadMock).toHaveBeenCalledWith(String(GUEST_CHAT_ID), {
+      messageId: 41,
+      text: "Hello. What can I help you with?",
+    });
+    expect(mocked.runGuestPromptMock).toHaveBeenCalledWith(
+      String(GUEST_CHAT_ID),
+      THREAD,
+      "what did I ask before?",
+    );
+  });
+
+  it("starts a new conversation for a reply to someone else's message", async () => {
+    mocked.runGuestPromptMock.mockResolvedValue("ok");
+    const api = createApi();
+
+    await handleGuestMessage(
+      createContext(api, {
+        reply_to_message: { message_id: 3, text: "hi", from: { id: 42, is_bot: false } },
+      }),
+    );
+
+    expect(mocked.findGuestThreadMock).toHaveBeenCalledWith(String(GUEST_CHAT_ID), undefined);
+  });
+
+  it("tells a reply to wait while its conversation is still running", async () => {
+    mocked.findGuestThreadMock.mockReturnValue(THREAD);
+    mocked.isGuestThreadRunningMock.mockReturnValue(true);
     const api = createApi();
 
     await handleGuestMessage(createContext(api));
-    await handleGuestMessage(createContext(api, { guest_query_id: "query-2" }));
 
-    expect(api.answerGuestQuery).toHaveBeenCalledTimes(2);
-    expect(api.answerGuestQuery.mock.calls[1]?.[0]).toBe("query-2");
-    expect(answeredText(api, 1)).toBe(t("guest.busy"));
-    expect(mocked.runGuestPromptMock).toHaveBeenCalledTimes(1);
+    expect(answeredText(api)).toBe(t("guest.busy"));
+    expect(mocked.runGuestPromptMock).not.toHaveBeenCalled();
+  });
 
-    finishTurn("done");
-    await vi.waitFor(() => expect(api.editMessageTextInline).toHaveBeenCalled());
+  it("runs separate conversations side by side, up to three per chat", async () => {
+    const pending = pendingReply();
+    mocked.runGuestPromptMock.mockReturnValue(pending.promise);
+    const api = createApi();
 
-    // The chat is free again once the first turn finished.
+    for (const queryId of ["q-1", "q-2", "q-3", "q-4"]) {
+      await handleGuestMessage(createContext(api, { guest_query_id: queryId }));
+    }
+
+    expect(mocked.runGuestPromptMock).toHaveBeenCalledTimes(3);
+    expect(answeredText(api, 3)).toBe(t("guest.too_many"));
+
+    pending.finish("done");
+    await vi.waitFor(() => expect(api.editMessageTextInline).toHaveBeenCalledTimes(3));
+
     mocked.runGuestPromptMock.mockResolvedValue("again");
-    await handleGuestMessage(createContext(api, { guest_query_id: "query-3" }));
-    expect(answeredText(api, 2)).toBe(t("guest.thinking"));
+    await handleGuestMessage(createContext(api, { guest_query_id: "q-5" }));
+    expect(answeredText(api, 4)).toBe(t("guest.thinking"));
   });
 
   it("refuses slash commands without starting a turn", async () => {
@@ -185,7 +260,7 @@ describe("bot/handlers/guest-message-handler", () => {
       mocked.runGuestPromptMock.mockRejectedValue(error);
       const api = createApi();
 
-      await runGuestTurn(api as unknown as Api, "inline-1", "1", "Chat", "hi");
+      await runGuestTurn(api as unknown as Api, "inline-1", "1", undefined, "hi");
 
       expect(api.editMessageTextInline).toHaveBeenCalledWith("inline-1", t(key));
     });
@@ -195,7 +270,7 @@ describe("bot/handlers/guest-message-handler", () => {
       mocked.runGuestPromptMock.mockResolvedValue("x".repeat(5000));
       const api = createApi();
 
-      await runGuestTurn(api as unknown as Api, "inline-1", "1", "Chat", "hi");
+      await runGuestTurn(api as unknown as Api, "inline-1", "1", undefined, "hi");
 
       const text = api.editMessageTextInline.mock.calls[0]?.[1] as string;
       expect(text.length).toBeLessThanOrEqual(4096);
@@ -204,16 +279,12 @@ describe("bot/handlers/guest-message-handler", () => {
 
     it("shows elapsed time on the placeholder while the turn runs", async () => {
       vi.useFakeTimers();
-      let finishTurn: (reply: string) => void = () => {};
-      mocked.runGuestPromptMock.mockReturnValue(
-        new Promise<string>((resolve) => {
-          finishTurn = resolve;
-        }),
-      );
+      const pending = pendingReply();
+      mocked.runGuestPromptMock.mockReturnValue(pending.promise);
       mocked.config.bot.messageFormatMode = "raw";
       const api = createApi();
 
-      const turn = runGuestTurn(api as unknown as Api, "inline-1", "1", "Chat", "hi");
+      const turn = runGuestTurn(api as unknown as Api, "inline-1", "1", undefined, "hi");
       await vi.advanceTimersByTimeAsync(15_000);
 
       expect(api.editMessageTextInline).toHaveBeenCalledWith(
@@ -221,7 +292,7 @@ describe("bot/handlers/guest-message-handler", () => {
         expect.stringContaining(t("guest.working", { elapsed: "" }).trim()),
       );
 
-      finishTurn("done");
+      pending.finish("done");
       await turn;
       const editsAfterReply = api.editMessageTextInline.mock.calls.length;
       await vi.advanceTimersByTimeAsync(60_000);

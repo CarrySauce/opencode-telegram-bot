@@ -526,7 +526,8 @@ export const zh: I18nDictionary = {
 
   "guest.thinking": "⏳ 思考中…",
   "guest.working": "⏳ 处理中… {elapsed}",
-  "guest.busy": "我仍在处理此聊天中的上一个请求。完成后再试一次。",
+  "guest.busy": "我仍在处理此对话中的上一个请求。完成后再试一次。",
+  "guest.too_many": "我已在此聊天中处理多个请求。请等其中一个完成后再试。",
   "guest.empty": "请在提及我时附上请求，例如：@bot 这个仓库是做什么的？",
   "guest.command_unsupported": "命令在访客聊天中不可用。请在与机器人的私聊中使用。",
   "guest.unsupported_message": "访客聊天中只支持文本请求。",

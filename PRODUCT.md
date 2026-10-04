@@ -241,7 +241,7 @@ Agent picker behavior:
 - [x] Incoming Telegram rich formatted messages (Bot API 10.1): converted to Markdown, accepted anywhere text is accepted, with photos attached and unsupported message types answered explicitly
 - [x] Startup either reaches Telegram polling or the process exits: transient Telegram failures are retried in-process; a bad token or other fatal startup error exits with code 1
 - [x] After a Telegram outage the bot answers again without restart; an undelivered assistant reply is not resent, and skipped stale messages are reported once
-- [x] Optional guest mode (Bot API 10.0): the owner's @mentions in chats the bot never joined are answered in place, one OpenCode session per guest chat
+- [x] Optional guest mode (Bot API 10.0): the owner's @mentions in chats the bot never joined are answered in place; a bare mention starts a new OpenCode session and a reply to the bot continues that message's session
 
 ## Current Task List
 

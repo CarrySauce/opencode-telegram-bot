@@ -570,7 +570,8 @@ export const id: I18nDictionary = {
 
   "guest.thinking": "⏳ Berpikir…",
   "guest.working": "⏳ Mengerjakan… {elapsed}",
-  "guest.busy": "Saya masih mengerjakan permintaan sebelumnya di chat ini. Coba lagi setelah selesai.",
+  "guest.busy": "Saya masih mengerjakan permintaan sebelumnya di percakapan ini. Coba lagi setelah selesai.",
+  "guest.too_many": "Saya sudah mengerjakan beberapa permintaan di chat ini. Coba lagi setelah salah satunya selesai.",
   "guest.empty": "Sebut saya dengan permintaan, misalnya: @bot apa fungsi repo ini?",
   "guest.command_unsupported": "Perintah tidak berfungsi di chat tamu. Buka chat pribadi dengan bot untuk menggunakannya.",
   "guest.unsupported_message": "Hanya permintaan teks yang berfungsi di chat tamu.",

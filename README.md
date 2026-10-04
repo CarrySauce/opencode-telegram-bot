@@ -186,9 +186,11 @@ Scheduled tasks let you prepare prompts in advance and run them automatically la
 With `TELEGRAM_GUEST_MODE=true`, you can @mention the bot in any chat, including a group it was never added to, and it answers there (Telegram guest bots, Bot API 10.0). Telegram delivers the mention as a guest message the bot may answer exactly once, so the bot posts a "⏳ Thinking…" placeholder, shows the elapsed time on it while OpenCode works, and then edits it into the reply.
 
 - Only `TELEGRAM_ALLOWED_USER_ID` can use it; mentions from anyone else are ignored and logged
-- Each guest chat has its own OpenCode session in the currently selected project (titled `Guest: <chat name>`), so follow-up mentions keep their context; it uses the current model and agent, and a new session starts after you switch projects
-- Guest turns run outside your private chat: they do not interrupt the current session and are not mirrored into it. Open the guest session from `/sessions` to see everything it did
-- Text requests only. Slash commands, attachments, and a second mention while the chat's previous request is still running get a short reply instead
+- A bare @mention starts a new conversation with its own OpenCode session in the currently selected project. Replying to one of the bot's messages continues the conversation that message belongs to, even an older one or one from another project, so a chat can hold several threads at once. A reply the bot cannot place continues the chat's latest conversation
+- Sessions are named by OpenCode from the first request, just like `/new` sessions, and use the current model and agent
+- Up to three conversations run at once per chat; a reply to a conversation that is still working gets a "still working" reply
+- Guest turns run outside your private chat: they do not interrupt the current session and are not mirrored into it. Open a guest session from `/sessions` to see everything it did
+- Text requests only. Slash commands and attachments get a short reply instead
 - A question or permission request from OpenCode cannot be answered from a guest chat, so it is rejected and the turn stops with a notice; continue in the private chat
 - Replies longer than one Telegram message are shortened; the full answer stays in the guest session
 - The wait is limited by `SCHEDULED_TASK_EXECUTION_TIMEOUT_MINUTES`

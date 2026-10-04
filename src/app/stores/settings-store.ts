@@ -4,7 +4,7 @@ import type { ProjectInfo } from "../types/project.js";
 import type { SessionDirectoryCacheInfo, SessionInfo } from "../types/session.js";
 import { cloneScheduledTask, type ScheduledTask } from "../types/scheduled-task.js";
 import type {
-  GuestSessionInfo,
+  GuestThreadInfo,
   PromptQueueMode,
   ResponseStreamingMode,
   ScheduledTaskSessionIgnoreInfo,
@@ -16,6 +16,16 @@ import { logger } from "../../utils/logger.js";
 
 function cloneScheduledTasks(tasks: ScheduledTask[] | undefined): ScheduledTask[] | undefined {
   return tasks?.map((task) => cloneScheduledTask(task));
+}
+
+function cloneGuestThreads(
+  threads: GuestThreadInfo[] | undefined,
+): GuestThreadInfo[] | undefined {
+  return threads?.map((thread) => ({
+    ...thread,
+    replyKeys: [...thread.replyKeys],
+    messageIds: [...thread.messageIds],
+  }));
 }
 
 function cloneScheduledTaskSessionIgnores(
@@ -348,13 +358,12 @@ export function setScheduledTaskSessionIgnores(
   return writeSettingsFile(currentSettings);
 }
 
-export function getGuestSession(chatId: string): GuestSessionInfo | undefined {
-  const session = currentSettings.guestSessions?.[chatId];
-  return session ? { ...session } : undefined;
+export function getGuestThreads(): GuestThreadInfo[] {
+  return cloneGuestThreads(currentSettings.guestThreads) ?? [];
 }
 
-export function setGuestSession(chatId: string, session: GuestSessionInfo): Promise<void> {
-  currentSettings.guestSessions = { ...currentSettings.guestSessions, [chatId]: { ...session } };
+export function setGuestThreads(threads: GuestThreadInfo[]): Promise<void> {
+  currentSettings.guestThreads = cloneGuestThreads(threads);
   return writeSettingsFile(currentSettings);
 }
 

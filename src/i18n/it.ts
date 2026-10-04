@@ -585,7 +585,8 @@ export const it: I18nDictionary = {
 
   "guest.thinking": "⏳ Sto pensando…",
   "guest.working": "⏳ Al lavoro… {elapsed}",
-  "guest.busy": "Sto ancora lavorando alla richiesta precedente in questa chat. Riprova quando ho finito.",
+  "guest.busy": "Sto ancora lavorando alla richiesta precedente di questa conversazione. Riprova quando ho finito.",
+  "guest.too_many": "Sto già lavorando a diverse richieste in questa chat. Riprova quando una di esse è terminata.",
   "guest.empty": "Menzionami con una richiesta, ad esempio: @bot cosa fa questo repository?",
   "guest.command_unsupported": "I comandi non funzionano nelle chat ospite. Apri una chat privata con il bot per usarli.",
   "guest.unsupported_message": "Nelle chat ospite funzionano solo le richieste di testo.",

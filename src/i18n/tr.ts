@@ -574,7 +574,8 @@ export const tr: I18nDictionary = {
 
   "guest.thinking": "⏳ Düşünüyorum…",
   "guest.working": "⏳ Çalışıyorum… {elapsed}",
-  "guest.busy": "Bu sohbetteki önceki istek üzerinde hâlâ çalışıyorum. Bittiğinde tekrar dene.",
+  "guest.busy": "Bu konuşmadaki önceki istek üzerinde hâlâ çalışıyorum. Bittiğinde tekrar dene.",
+  "guest.too_many": "Bu sohbette zaten birkaç istek üzerinde çalışıyorum. Biri bittiğinde tekrar dene.",
   "guest.empty": "Beni bir istekle an, örneğin: @bot bu depo ne yapıyor?",
   "guest.command_unsupported": "Komutlar misafir sohbetlerinde çalışmaz. Kullanmak için bot ile özel sohbet aç.",
   "guest.unsupported_message": "Misafir sohbetlerinde yalnızca metin istekleri çalışır.",

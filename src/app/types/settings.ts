@@ -12,10 +12,16 @@ export interface ScheduledTaskSessionIgnoreInfo {
   createdAt: string;
 }
 
-/** OpenCode session a guest chat talks to, so follow-up mentions keep their context. */
-export interface GuestSessionInfo {
+/** One guest conversation: the OpenCode session behind it and how replies find it again. */
+export interface GuestThreadInfo {
+  chatId: string;
   sessionId: string;
   directory: string;
+  /** Normalized text of the bot's replies, matched against the text a reply quotes back. */
+  replyKeys: string[];
+  /** Chat message ids of bot replies that were replied to, for an exact match next time. */
+  messageIds: number[];
+  updatedAt: string;
 }
 
 export interface Settings {
@@ -37,5 +43,5 @@ export interface Settings {
   sessionDirectoryCache?: SessionDirectoryCacheInfo | undefined;
   scheduledTasks?: ScheduledTask[] | undefined;
   scheduledTaskSessionIgnores?: ScheduledTaskSessionIgnoreInfo[] | undefined;
-  guestSessions?: Record<string, GuestSessionInfo> | undefined;
+  guestThreads?: GuestThreadInfo[] | undefined;
 }
