@@ -4,6 +4,7 @@ import type { GuestThreadInfo } from "../../../src/app/types/settings.js";
 const mocked = vi.hoisted(() => ({
   createMock: vi.fn(),
   getMock: vi.fn(),
+  messagesMock: vi.fn(),
   promptAsyncMock: vi.fn(),
   waitMock: vi.fn(),
   registerIgnoreMock: vi.fn(),
@@ -18,9 +19,14 @@ vi.mock("../../../src/opencode/client.js", () => ({
     session: {
       create: mocked.createMock,
       get: mocked.getMock,
+      messages: mocked.messagesMock,
       promptAsync: mocked.promptAsyncMock,
     },
   },
+}));
+
+vi.mock("../../../src/config.js", () => ({
+  config: { bot: { bashToolDisplayMaxLength: 128 } },
 }));
 
 vi.mock("../../../src/utils/logger.js", () => ({
@@ -54,6 +60,7 @@ vi.mock("../../../src/app/services/scheduled-task-session-ignore-service.js", ()
 
 import {
   __resetGuestSessionsForTests,
+  describeGuestActivity,
   findGuestThread,
   GuestNoProjectError,
   guestReplyKey,
@@ -250,6 +257,103 @@ describe("app/services/guest-session-service", () => {
       const thread = findGuestThread(CHAT_ID, { messageId: 9, text: "⏳ Thinking…" });
 
       expect(thread?.sessionId).toBe("second");
+    });
+  });
+
+  describe("describeGuestActivity", () => {
+    const SESSION = { sessionId: "session-1", directory: PROJECT_DIR };
+
+    it("describes the latest tool call of the running reply", async () => {
+      mocked.messagesMock.mockResolvedValue({
+        data: [
+          { info: { id: "m1", role: "user" }, parts: [{ type: "text", text: "check vms" }] },
+          {
+            info: { id: "m2", role: "assistant" },
+            parts: [
+              {
+                type: "tool",
+                tool: "read",
+                callID: "c1",
+                state: { status: "completed", input: { filePath: "/etc/hosts" }, title: "hosts" },
+              },
+              {
+                type: "tool",
+                tool: "bash",
+                callID: "c2",
+                state: { status: "running", input: { command: "virsh list --all" } },
+              },
+              { type: "text", text: "Let me check." },
+            ],
+          },
+        ],
+        error: undefined,
+      });
+
+      const activity = await describeGuestActivity(SESSION);
+
+      expect(mocked.messagesMock).toHaveBeenCalledWith({
+        sessionID: "session-1",
+        directory: PROJECT_DIR,
+      });
+      expect(activity).toContain("bash");
+      expect(activity).toContain("virsh list --all");
+    });
+
+    it("keeps showing the turn's last action once a later step starts writing", async () => {
+      mocked.messagesMock.mockResolvedValue({
+        data: [
+          { info: { id: "m1", role: "user" }, parts: [{ type: "text", text: "check vms" }] },
+          {
+            info: { id: "m2", role: "assistant" },
+            parts: [
+              {
+                type: "tool",
+                tool: "bash",
+                callID: "c1",
+                state: { status: "completed", input: { command: "virsh list --all" } },
+              },
+            ],
+          },
+          { info: { id: "m3", role: "assistant" }, parts: [{ type: "text", text: "There are" }] },
+        ],
+        error: undefined,
+      });
+
+      await expect(describeGuestActivity(SESSION)).resolves.toContain("virsh list --all");
+    });
+
+    it("has nothing to show before the reply makes a tool call", async () => {
+      mocked.messagesMock.mockResolvedValue({
+        data: [
+          { info: { id: "m1", role: "user" }, parts: [{ type: "text", text: "hi" }] },
+          { info: { id: "m2", role: "assistant" }, parts: [{ type: "text", text: "Hel" }] },
+        ],
+        error: undefined,
+      });
+
+      await expect(describeGuestActivity(SESSION)).resolves.toBeNull();
+    });
+
+    it("does not show a previous turn's action while the new prompt has no reply yet", async () => {
+      mocked.messagesMock.mockResolvedValue({
+        data: [
+          {
+            info: { id: "m1", role: "assistant" },
+            parts: [
+              {
+                type: "tool",
+                tool: "bash",
+                callID: "c1",
+                state: { status: "completed", input: { command: "ls" } },
+              },
+            ],
+          },
+          { info: { id: "m2", role: "user" }, parts: [{ type: "text", text: "next" }] },
+        ],
+        error: undefined,
+      });
+
+      await expect(describeGuestActivity(SESSION)).resolves.toBeNull();
     });
   });
 });

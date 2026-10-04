@@ -183,10 +183,11 @@ Scheduled tasks let you prepare prompts in advance and run them automatically la
 
 ## Guest Mode
 
-With `TELEGRAM_GUEST_MODE=true`, you can @mention the bot in any chat, including a group it was never added to, and it answers there (Telegram guest bots, Bot API 10.0). Telegram delivers the mention as a guest message the bot may answer exactly once, so the bot posts a "⏳ Thinking…" placeholder, shows the elapsed time on it while OpenCode works, and then edits it into the reply.
+With `TELEGRAM_GUEST_MODE=true`, you can @mention the bot in any chat, including a group it was never added to, and it answers there (Telegram guest bots, Bot API 10.0). Telegram delivers the mention as a guest message the bot may answer exactly once, so the bot posts a "⏳ Thinking…" placeholder, shows the elapsed time and the session's latest action (for example `💻 bash virsh list --all`) on it while OpenCode works, and then edits it into the reply.
 
 - Only `TELEGRAM_ALLOWED_USER_ID` can use it; mentions from anyone else are ignored and logged
 - A bare @mention starts a new conversation with its own OpenCode session in the currently selected project. Replying to one of the bot's messages continues the conversation that message belongs to, even an older one or one from another project, so a chat can hold several threads at once. A reply the bot cannot place continues the chat's latest conversation
+- Mentioning the bot in reply to someone else's message (or your own) sends that message along with the request, or only the part of it you quoted, since OpenCode cannot see the chat. A bare mention in reply to a message asks about that message
 - Sessions are named by OpenCode from the first request, just like `/new` sessions, and use the current model and agent
 - Up to three conversations run at once per chat; a reply to a conversation that is still working gets a "still working" reply
 - Guest turns run outside your private chat: they do not interrupt the current session and are not mirrored into it. Open a guest session from `/sessions` to see everything it did

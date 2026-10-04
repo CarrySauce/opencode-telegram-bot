@@ -5,6 +5,7 @@ import { t } from "../../../src/i18n/index.js";
 const mocked = vi.hoisted(() => ({
   runGuestPromptMock: vi.fn(),
   findGuestThreadMock: vi.fn(),
+  describeGuestActivityMock: vi.fn(),
   isGuestThreadRunningMock: vi.fn(),
   config: { bot: { messageFormatMode: "markdown" } },
 }));
@@ -24,6 +25,7 @@ vi.mock("../../../src/app/services/guest-session-service.js", async (importOrigi
     ...actual,
     runGuestPrompt: mocked.runGuestPromptMock,
     findGuestThread: mocked.findGuestThreadMock,
+    describeGuestActivity: mocked.describeGuestActivityMock,
     isGuestThreadRunning: mocked.isGuestThreadRunningMock,
   };
 });
@@ -92,6 +94,7 @@ describe("bot/handlers/guest-message-handler", () => {
     mocked.config.bot.messageFormatMode = "markdown";
     mocked.findGuestThreadMock.mockReturnValue(undefined);
     mocked.isGuestThreadRunningMock.mockReturnValue(false);
+    mocked.describeGuestActivityMock.mockResolvedValue(null);
     __resetGuestMessageHandlerForTests();
   });
 
@@ -114,6 +117,7 @@ describe("bot/handlers/guest-message-handler", () => {
       String(GUEST_CHAT_ID),
       undefined,
       "what does this repo do?",
+      expect.any(Function),
     );
     expect(api.editMessageTextInline).toHaveBeenCalledWith("inline-1", "It is a *bot*\\.", {
       parse_mode: "MarkdownV2",
@@ -158,6 +162,7 @@ describe("bot/handlers/guest-message-handler", () => {
       String(GUEST_CHAT_ID),
       THREAD,
       "what did I ask before?",
+      expect.any(Function),
     );
   });
 
@@ -172,6 +177,48 @@ describe("bot/handlers/guest-message-handler", () => {
     );
 
     expect(mocked.findGuestThreadMock).toHaveBeenCalledWith(String(GUEST_CHAT_ID), undefined);
+  });
+
+  it("puts the message a mention replies to in front of the request", async () => {
+    mocked.runGuestPromptMock.mockResolvedValue("ok");
+    const api = createApi();
+
+    await handleGuestMessage(
+      createContext(api, {
+        text: "@opencode_bot what did I ask?",
+        reply_to_message: {
+          message_id: 3,
+          text: "guess a number and give me options",
+          from: { id: 42, is_bot: false, first_name: "Alex", last_name: "Donec" },
+        },
+      }),
+    );
+
+    expect(mocked.runGuestPromptMock.mock.calls[0]?.[2]).toBe(
+      'Message from Alex Donec this request replies to:\n"""\nguess a number and give me options\n"""\n\nwhat did I ask?',
+    );
+  });
+
+  it("uses only the quoted part of the message when there is one", async () => {
+    mocked.runGuestPromptMock.mockResolvedValue("ok");
+    const api = createApi();
+
+    await handleGuestMessage(
+      createContext(api, {
+        text: "@opencode_bot",
+        quote: { text: "options", position: 28 },
+        reply_to_message: {
+          message_id: 3,
+          text: "guess a number and give me options",
+          sender_chat: { id: -1, type: "channel", title: "News" },
+        },
+      }),
+    );
+
+    // A bare mention in reply to a message asks about that message.
+    expect(mocked.runGuestPromptMock.mock.calls[0]?.[2]).toBe(
+      'Message from News this request replies to:\n"""\noptions\n"""',
+    );
   });
 
   it("tells a reply to wait while its conversation is still running", async () => {
@@ -277,19 +324,34 @@ describe("bot/handlers/guest-message-handler", () => {
       expect(text.endsWith(t("guest.truncated"))).toBe(true);
     });
 
-    it("shows elapsed time on the placeholder while the turn runs", async () => {
+    it("shows elapsed time and the session's latest action while the turn runs", async () => {
       vi.useFakeTimers();
       const pending = pendingReply();
-      mocked.runGuestPromptMock.mockReturnValue(pending.promise);
+      mocked.runGuestPromptMock.mockImplementation(
+        (
+          _chatId: string,
+          _thread: unknown,
+          _text: string,
+          onSessionReady: (s: unknown) => void,
+        ) => {
+          onSessionReady({ sessionId: "session-1", directory: "/work/repo" });
+          return pending.promise;
+        },
+      );
+      mocked.describeGuestActivityMock.mockResolvedValue("💻 bash virsh list --all");
       mocked.config.bot.messageFormatMode = "raw";
       const api = createApi();
 
       const turn = runGuestTurn(api as unknown as Api, "inline-1", "1", undefined, "hi");
-      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.advanceTimersByTimeAsync(10_000);
 
+      expect(mocked.describeGuestActivityMock).toHaveBeenCalledWith({
+        sessionId: "session-1",
+        directory: "/work/repo",
+      });
       expect(api.editMessageTextInline).toHaveBeenCalledWith(
         "inline-1",
-        expect.stringContaining(t("guest.working", { elapsed: "" }).trim()),
+        `${t("guest.working", { elapsed: "10s" })}\n\n💻 bash virsh list --all`,
       );
 
       pending.finish("done");
@@ -297,6 +359,55 @@ describe("bot/handlers/guest-message-handler", () => {
       const editsAfterReply = api.editMessageTextInline.mock.calls.length;
       await vi.advanceTimersByTimeAsync(60_000);
       expect(api.editMessageTextInline).toHaveBeenCalledTimes(editsAfterReply);
+      expect(api.editMessageTextInline).toHaveBeenLastCalledWith("inline-1", "done");
+    });
+
+    it("shows only the elapsed time before the session has an action to show", async () => {
+      vi.useFakeTimers();
+      const pending = pendingReply();
+      mocked.runGuestPromptMock.mockReturnValue(pending.promise);
+      mocked.config.bot.messageFormatMode = "raw";
+      const api = createApi();
+
+      const turn = runGuestTurn(api as unknown as Api, "inline-1", "1", undefined, "hi");
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      expect(mocked.describeGuestActivityMock).not.toHaveBeenCalled();
+      expect(api.editMessageTextInline).toHaveBeenCalledWith(
+        "inline-1",
+        t("guest.working", { elapsed: "10s" }),
+      );
+      pending.finish("done");
+      await turn;
+    });
+
+    it("never lets a late progress edit replace the reply", async () => {
+      vi.useFakeTimers();
+      const pending = pendingReply();
+      const activity = pendingReply();
+      mocked.runGuestPromptMock.mockImplementation(
+        (
+          _chatId: string,
+          _thread: unknown,
+          _text: string,
+          onSessionReady: (s: unknown) => void,
+        ) => {
+          onSessionReady({ sessionId: "session-1", directory: "/work/repo" });
+          return pending.promise;
+        },
+      );
+      mocked.describeGuestActivityMock.mockReturnValue(activity.promise);
+      mocked.config.bot.messageFormatMode = "raw";
+      const api = createApi();
+
+      const turn = runGuestTurn(api as unknown as Api, "inline-1", "1", undefined, "hi");
+      await vi.advanceTimersByTimeAsync(10_000);
+      pending.finish("done");
+      await vi.advanceTimersByTimeAsync(0);
+      activity.finish("💻 bash ls");
+      await turn;
+
+      expect(api.editMessageTextInline).toHaveBeenCalledTimes(1);
       expect(api.editMessageTextInline).toHaveBeenLastCalledWith("inline-1", "done");
     });
   });

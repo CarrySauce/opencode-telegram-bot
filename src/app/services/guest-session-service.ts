@@ -1,7 +1,12 @@
+import type { ToolState } from "@opencode-ai/sdk/v2";
 import { opencodeClient } from "../../opencode/client.js";
 import { logger } from "../../utils/logger.js";
 import { getCurrentProject, getGuestThreads, setGuestThreads } from "../stores/settings-store.js";
 import type { GuestThreadInfo } from "../types/settings.js";
+import {
+  formatCompactToolActivity,
+  formatCompactToolInfo,
+} from "../formatters/summary-formatter.js";
 import { getStoredAgent, resolveProjectAgent } from "./agent-selection-service.js";
 import { getStoredModel } from "./model-selection-service.js";
 import { waitForScheduledTaskResult } from "./scheduled-task-executor-service.js";
@@ -153,14 +158,77 @@ async function createThread(chatId: string): Promise<GuestThreadInfo> {
   };
 }
 
+/** The session a guest turn runs in, known once it is resolved or created. */
+export interface GuestSessionRef {
+  sessionId: string;
+  directory: string;
+}
+
+const ACTIVITY_MAX_CHARS = 128;
+
+type SessionPartSnapshot = {
+  type?: string;
+  tool?: string;
+  callID?: string;
+  state?: ToolState;
+};
+
+/** One line describing the latest tool call of the session's running turn, if it made one. */
+export async function describeGuestActivity(session: GuestSessionRef): Promise<string | null> {
+  const { data: messages, error } = await opencodeClient.session.messages({
+    sessionID: session.sessionId,
+    directory: session.directory,
+  });
+  if (error || !messages) {
+    return null;
+  }
+
+  // The turn's reply can span several assistant messages, one per step: look back to its prompt.
+  let found: { messageId: string; part: SessionPartSnapshot } | undefined;
+  for (let index = messages.length - 1; index >= 0 && !found; index -= 1) {
+    const message = messages[index];
+    if (!message || message.info.role !== "assistant") {
+      break;
+    }
+    const part = [...(message.parts as SessionPartSnapshot[])]
+      .reverse()
+      .find((candidate) => candidate.type === "tool" && candidate.tool && candidate.state);
+    if (part) {
+      found = { messageId: message.info.id, part };
+    }
+  }
+  const toolPart = found?.part;
+  if (!found || !toolPart?.tool || !toolPart.state) {
+    return null;
+  }
+
+  const state = toolPart.state;
+  const toolInfo = {
+    sessionId: session.sessionId,
+    messageId: found.messageId,
+    callId: toolPart.callID ?? "",
+    tool: toolPart.tool,
+    state,
+    input: state.input,
+    title: "title" in state ? state.title : undefined,
+    metadata: "metadata" in state ? state.metadata : undefined,
+  };
+  return (
+    formatCompactToolActivity(toolInfo, ACTIVITY_MAX_CHARS) ??
+    formatCompactToolInfo(toolInfo, ACTIVITY_MAX_CHARS, toolInfo.tool)
+  );
+}
+
 /**
  * Runs one guest prompt to completion and returns the assistant's reply text. Continues
  * `thread` while its session still exists, otherwise starts a new session in the current project.
+ * `onSessionReady` hears which session that is before the prompt is sent.
  */
 export async function runGuestPrompt(
   chatId: string,
   thread: GuestThreadInfo | undefined,
   text: string,
+  onSessionReady?: (session: GuestSessionRef) => void,
 ): Promise<string> {
   // Claimed before the first await, so a reply arriving right behind this one sees it running.
   let claimedSessionId = thread?.sessionId;
@@ -182,6 +250,7 @@ export async function runGuestPrompt(
     current = await updateThread(current, () => ({}));
     // Keeps background session tracking from mirroring the guest turn into the private chat.
     await registerScheduledTaskSessionIgnore(current.sessionId);
+    onSessionReady?.({ sessionId: current.sessionId, directory: current.directory });
 
     const agent = await resolveProjectAgent(getStoredAgent());
     const model = getStoredModel();

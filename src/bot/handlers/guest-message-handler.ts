@@ -3,11 +3,13 @@ import type { InlineQueryResultArticle, Message } from "grammy/types";
 import { config } from "../../config.js";
 import { formatDuration } from "../../app/formatters/duration-formatter.js";
 import {
+  describeGuestActivity,
   findGuestThread,
   GuestNoProjectError,
   isGuestThreadRunning,
   runGuestPrompt,
   type GuestReplyTarget,
+  type GuestSessionRef,
 } from "../../app/services/guest-session-service.js";
 import type { GuestThreadInfo } from "../../app/types/settings.js";
 import { ScheduledTaskInteractiveRequestError } from "../../app/services/scheduled-task-executor-service.js";
@@ -19,7 +21,7 @@ import { TELEGRAM_TEXT_MESSAGE_LIMIT } from "../render/limits.js";
 import { isTelegramBadRequestError } from "../messages/send-with-markdown-fallback.js";
 
 // A guest chat has exactly one message the bot may write to, so progress is shown by editing it.
-const PROGRESS_INTERVAL_MS = 15_000;
+const PROGRESS_INTERVAL_MS = 10_000;
 
 // Conversations in one guest chat run side by side, up to this many at once.
 const MAX_CONCURRENT_TURNS_PER_CHAT = 3;
@@ -51,20 +53,51 @@ function stripBotMention(text: string, botUsername: string | undefined): string 
   return text.replace(new RegExp(`@${botUsername}\\b`, "gi"), "").trim();
 }
 
+function isBotMessage(message: Message, botId: number | undefined): boolean {
+  // A guest bot's message is sent on the caller's behalf "via" the bot.
+  return botId !== undefined && (message.from?.id === botId || message.via_bot?.id === botId);
+}
+
 /** The bot message this guest message replies to, if it replies to one. */
 function getBotReplyTarget(
   message: Message,
   botId: number | undefined,
 ): GuestReplyTarget | undefined {
   const replied = message.reply_to_message;
-  if (!replied || botId === undefined) {
-    return undefined;
-  }
-  // A guest bot's message is sent on the caller's behalf "via" the bot.
-  if (replied.from?.id !== botId && replied.via_bot?.id !== botId) {
+  if (!replied || !isBotMessage(replied, botId)) {
     return undefined;
   }
   return { messageId: replied.message_id, text: replied.text ?? replied.caption ?? "" };
+}
+
+function getAuthorName(message: Message): string | undefined {
+  if (message.from) {
+    return [message.from.first_name, message.from.last_name].filter(Boolean).join(" ");
+  }
+  return message.sender_chat && "title" in message.sender_chat
+    ? message.sender_chat.title
+    : undefined;
+}
+
+/**
+ * The message the request replies to, when it is someone's message rather than the bot's: OpenCode
+ * cannot see the guest chat, so the request would otherwise lose what it refers to.
+ */
+function getQuotedContext(message: Message, botId: number | undefined): string | undefined {
+  const replied = message.reply_to_message;
+  if (!replied || isBotMessage(replied, botId)) {
+    return undefined;
+  }
+  // A quote of part of the message is what the user pointed at; otherwise the whole message.
+  const quoted = (message.quote?.text ?? replied.text ?? replied.caption ?? "").trim();
+  if (!quoted) {
+    return undefined;
+  }
+  const author = getAuthorName(replied);
+  const heading = author
+    ? `Message from ${author} this request replies to:`
+    : "Message this request replies to:";
+  return `${heading}\n"""\n${quoted}\n"""`;
 }
 
 function truncateForTelegram(text: string): string {
@@ -117,20 +150,51 @@ export async function runGuestTurn(
   text: string,
 ): Promise<void> {
   const startedAt = Date.now();
+  let session: GuestSessionRef | undefined;
+  let finished = false;
+  let progressTick: Promise<void> | undefined;
+
+  const showProgress = async (): Promise<void> => {
+    const activity = session
+      ? await describeGuestActivity(session).catch((error: unknown) => {
+          logger.debug(`[Guest] Could not read session activity: chatId=${chatId}`, error);
+          return null;
+        })
+      : null;
+    if (finished) {
+      return;
+    }
+    const working = t("guest.working", { elapsed: formatDuration(Date.now() - startedAt) });
+    await editGuestMessage(api, inlineMessageId, activity ? `${working}\n\n${activity}` : working);
+  };
+
   const progressTimer = setInterval(() => {
-    const elapsed = formatDuration(Date.now() - startedAt);
-    editGuestMessage(api, inlineMessageId, t("guest.working", { elapsed })).catch((error) => {
-      logger.debug(`[Guest] Progress edit failed: chatId=${chatId}`, error);
-    });
+    // A slow tick is skipped over rather than queued behind.
+    progressTick ??= showProgress()
+      .catch((error: unknown) => {
+        logger.debug(`[Guest] Progress edit failed: chatId=${chatId}`, error);
+      })
+      .finally(() => {
+        progressTick = undefined;
+      });
   }, PROGRESS_INTERVAL_MS);
 
-  try {
-    const reply = await runGuestPrompt(chatId, thread, text);
+  // A progress edit still in flight must not land on top of the reply.
+  const stopProgress = async (): Promise<void> => {
+    finished = true;
     clearInterval(progressTimer);
+    await progressTick;
+  };
+
+  try {
+    const reply = await runGuestPrompt(chatId, thread, text, (readySession) => {
+      session = readySession;
+    });
+    await stopProgress();
     await editGuestReply(api, inlineMessageId, reply);
     logger.info(`[Guest] Turn completed: chatId=${chatId}`);
   } catch (error) {
-    clearInterval(progressTimer);
+    await stopProgress();
     logger.error(`[Guest] Turn failed: chatId=${chatId}`, error);
     await editGuestMessage(api, inlineMessageId, describeGuestError(error)).catch((editError) => {
       logger.warn(`[Guest] Could not report failure: chatId=${chatId}`, editError);
@@ -161,20 +225,23 @@ export async function handleGuestMessage(ctx: Context): Promise<void> {
   }
 
   const chatId = String(message.chat.id);
-  const text = stripBotMention(message.text ?? "", ctx.me?.username);
+  const request = stripBotMention(message.text ?? "", ctx.me?.username);
+  const quotedContext = getQuotedContext(message, ctx.me?.id);
 
   if (message.text === undefined) {
     await answerWithText(ctx, guestQueryId, t("guest.unsupported_message"));
     return;
   }
-  if (!text) {
+  // A bare mention in reply to a message is a request about that message.
+  if (!request && !quotedContext) {
     await answerWithText(ctx, guestQueryId, t("guest.empty"));
     return;
   }
-  if (text.startsWith("/")) {
+  if (request.startsWith("/")) {
     await answerWithText(ctx, guestQueryId, t("guest.command_unsupported"));
     return;
   }
+  const text = [quotedContext, request].filter(Boolean).join("\n\n");
 
   // A reply to one of the bot's messages continues that conversation; anything else starts one.
   const thread = findGuestThread(chatId, getBotReplyTarget(message, ctx.me?.id));
