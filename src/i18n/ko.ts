@@ -595,6 +595,8 @@ export const ko: I18nDictionary = {
   "guest.connect.no_reply": "🔗 연결되었습니다. 세션에 아직 답변이 없습니다: 이 메시지에 답장하면 여기서 이어갈 수 있습니다.",
   "guest.connect.expired": "이 목록은 만료되었습니다. connect를 다시 보내세요.",
   "guest.connect.not_allowed": "봇 소유자만 이 버튼을 사용할 수 있습니다.",
+  "guest.connect.cancel": "✖️ 취소",
+  "guest.connect.cancelled": "✖️ 취소되었습니다.",
 
   "tasklist.empty": "📭 아직 예약 작업이 없습니다.",
   "tasklist.select": "예약 작업을 선택하세요:",

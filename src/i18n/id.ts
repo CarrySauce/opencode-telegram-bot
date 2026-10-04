@@ -585,6 +585,8 @@ export const id: I18nDictionary = {
   "guest.connect.no_reply": "🔗 Terhubung. Sesi belum punya balasan: balas pesan ini untuk melanjutkannya di sini.",
   "guest.connect.expired": "Daftar ini sudah kedaluwarsa. Kirim connect lagi.",
   "guest.connect.not_allowed": "Hanya pemilik bot yang bisa memakai tombol ini.",
+  "guest.connect.cancel": "✖️ Batal",
+  "guest.connect.cancelled": "✖️ Dibatalkan.",
 
   "tasklist.empty": "📭 Belum ada tugas terjadwal.",
   "tasklist.select": "Pilih tugas terjadwal:",

@@ -541,6 +541,8 @@ export const zh: I18nDictionary = {
   "guest.connect.no_reply": "🔗 已连接。该会话还没有回复：回复此消息即可在这里继续。",
   "guest.connect.expired": "此列表已过期。请重新发送 connect。",
   "guest.connect.not_allowed": "只有机器人所有者可以使用这些按钮。",
+  "guest.connect.cancel": "✖️ 取消",
+  "guest.connect.cancelled": "✖️ 已取消。",
 
   "tasklist.empty": "📭 还没有定时任务。",
   "tasklist.select": "请选择一个定时任务：",

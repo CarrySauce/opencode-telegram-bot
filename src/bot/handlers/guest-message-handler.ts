@@ -45,6 +45,7 @@ function changeActiveTurns(chatId: string, delta: number): void {
 // `@bot connect <search>` lists sessions to continue in the guest chat; a tap carries this prefix.
 const CONNECT_PATTERN = /^connect(?:\s+([\s\S]*))?$/i;
 export const GUEST_CONNECT_CALLBACK_PREFIX = "gcon:";
+const CONNECT_CANCEL_CALLBACK = `${GUEST_CONNECT_CALLBACK_PREFIX}cancel`;
 const CONNECT_BUTTON_TITLE_CHARS = 40;
 // Session lists waiting for a tap, by the inline message they are drawn on. In memory: after a
 // restart a tap is answered as expired and the list is asked for again.
@@ -345,12 +346,15 @@ async function offerSessionsToConnect(
   }
 
   const keyboard: InlineKeyboardMarkup = {
-    inline_keyboard: sessions.map((session, index) => [
-      {
-        text: connectButtonLabel(session),
-        callback_data: `${GUEST_CONNECT_CALLBACK_PREFIX}${index}`,
-      },
-    ]),
+    inline_keyboard: [
+      ...sessions.map((session, index) => [
+        {
+          text: connectButtonLabel(session),
+          callback_data: `${GUEST_CONNECT_CALLBACK_PREFIX}${index}`,
+        },
+      ]),
+      [{ text: t("guest.connect.cancel"), callback_data: CONNECT_CANCEL_CALLBACK }],
+    ],
   };
   try {
     const sent = await ctx.api.answerGuestQuery(
@@ -373,6 +377,10 @@ async function offerSessionsToConnect(
  */
 export async function handleGuestConnectCallback(ctx: Context): Promise<void> {
   const inlineMessageId = ctx.callbackQuery?.inline_message_id;
+  if (ctx.callbackQuery?.data === CONNECT_CANCEL_CALLBACK) {
+    await cancelConnect(ctx, inlineMessageId);
+    return;
+  }
   const index = Number((ctx.callbackQuery?.data ?? "").slice(GUEST_CONNECT_CALLBACK_PREFIX.length));
   const pending = inlineMessageId ? pendingConnects.get(inlineMessageId) : undefined;
   const session = pending?.sessions[index];
@@ -419,6 +427,21 @@ export async function handleGuestConnectCallback(ctx: Context): Promise<void> {
       runGuestTurn(ctx.api, inlineMessageId, chatId, (onSessionReady) =>
         watchGuestSession(chatId, thread, onSessionReady),
       ),
+  });
+}
+
+/**
+ * Cancel on a session list. A bot cannot delete an inline message, so the list collapses into a
+ * one-line note instead. Works on a list from before a restart too: there is nothing to undo.
+ */
+async function cancelConnect(ctx: Context, inlineMessageId: string | undefined): Promise<void> {
+  await ctx.answerCallbackQuery().catch(() => {});
+  if (!inlineMessageId) {
+    return;
+  }
+  pendingConnects.delete(inlineMessageId);
+  await editGuestMessage(ctx.api, inlineMessageId, t("guest.connect.cancelled")).catch((error) => {
+    logger.debug("[Guest] Could not cancel the session list", error);
   });
 }
 

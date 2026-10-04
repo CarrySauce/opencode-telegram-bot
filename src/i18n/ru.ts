@@ -590,6 +590,8 @@ export const ru: I18nDictionary = {
   "guest.connect.no_reply": "🔗 Подключено. В сессии пока нет ответа: ответьте на это сообщение, чтобы продолжить её здесь.",
   "guest.connect.expired": "Этот список устарел. Отправьте connect ещё раз.",
   "guest.connect.not_allowed": "Эти кнопки может нажимать только владелец бота.",
+  "guest.connect.cancel": "✖️ Отмена",
+  "guest.connect.cancelled": "✖️ Отменено.",
 
   "tasklist.empty": "📭 Задач по расписанию пока нет.",
   "tasklist.select": "Выберите задачу по расписанию:",

@@ -573,6 +573,8 @@ export const ar: I18nDictionary = {
   "guest.connect.no_reply": "🔗 تم الاتصال. لا يوجد رد في الجلسة بعد: رد على هذه الرسالة لمتابعتها هنا.",
   "guest.connect.expired": "انتهت صلاحية هذه القائمة. أرسل connect مرة أخرى.",
   "guest.connect.not_allowed": "مالك البوت فقط يمكنه استخدام هذه الأزرار.",
+  "guest.connect.cancel": "✖️ إلغاء",
+  "guest.connect.cancelled": "✖️ تم الإلغاء.",
   "tasklist.empty": "📭 لا توجد مهام مجدولة حتى الآن.",
   "tasklist.select": "اختر مهمة مجدولة:",
   "tasklist.details":

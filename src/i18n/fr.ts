@@ -610,6 +610,8 @@ export const fr: I18nDictionary = {
   "guest.connect.no_reply": "🔗 Connecté. La session n'a pas encore de réponse : réponds à ce message pour la poursuivre ici.",
   "guest.connect.expired": "Cette liste a expiré. Envoie connect à nouveau.",
   "guest.connect.not_allowed": "Seul le propriétaire du bot peut utiliser ces boutons.",
+  "guest.connect.cancel": "✖️ Annuler",
+  "guest.connect.cancelled": "✖️ Annulé.",
 
   "tasklist.empty": "📭 Aucune tâche planifiée pour le moment.",
   "tasklist.select": "Sélectionnez une tâche planifiée :",

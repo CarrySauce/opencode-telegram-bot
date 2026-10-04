@@ -196,7 +196,7 @@ export function createBot(
   if (config.bot.guestMode) {
     bot.on("guest_message", handleGuestMessage);
     bot.callbackQuery(
-      new RegExp(`^${GUEST_CONNECT_CALLBACK_PREFIX}\\d+$`),
+      new RegExp(`^${GUEST_CONNECT_CALLBACK_PREFIX}(?:\\d+|cancel)$`),
       handleGuestConnectCallback,
     );
   }

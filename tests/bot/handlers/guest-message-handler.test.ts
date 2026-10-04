@@ -459,6 +459,7 @@ describe("bot/handlers/guest-message-handler", () => {
       expect(result.reply_markup.inline_keyboard).toEqual([
         [{ text: "Check VMs on the host · infra", callback_data: "gcon:0" }],
         [{ text: "vm migration · dm", callback_data: "gcon:1" }],
+        [{ text: t("guest.connect.cancel"), callback_data: "gcon:cancel" }],
       ]);
     });
 
@@ -510,6 +511,36 @@ describe("bot/handlers/guest-message-handler", () => {
         String(GUEST_CHAT_ID),
         THREAD,
         expect.any(Function),
+      );
+    });
+
+    it("collapses the list on Cancel and connects nothing", async () => {
+      mocked.searchGuestSessionsMock.mockResolvedValue(SESSIONS);
+      const api = createApi();
+      await handleGuestMessage(createContext(api, { text: "@opencode_bot connect vm" }));
+
+      const cancel = createTapContext(api, "gcon:cancel");
+      await handleGuestConnectCallback(cancel.ctx);
+      const late = createTapContext(api, "gcon:0");
+      await handleGuestConnectCallback(late.ctx);
+
+      expect(cancel.answerCallbackQuery).toHaveBeenCalledWith();
+      expect(api.editMessageTextInline).toHaveBeenCalledWith(
+        "inline-1",
+        t("guest.connect.cancelled"),
+      );
+      expect(late.answerCallbackQuery).toHaveBeenCalledWith({ text: t("guest.connect.expired") });
+      expect(mocked.connectGuestThreadMock).not.toHaveBeenCalled();
+    });
+
+    it("cancels a list from before a restart too", async () => {
+      const api = createApi();
+
+      await handleGuestConnectCallback(createTapContext(api, "gcon:cancel", "inline-old").ctx);
+
+      expect(api.editMessageTextInline).toHaveBeenCalledWith(
+        "inline-old",
+        t("guest.connect.cancelled"),
       );
     });
 

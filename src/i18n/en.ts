@@ -585,6 +585,8 @@ export const en = {
   "guest.connect.no_reply": "🔗 Connected. The session has no reply yet: reply to this message to continue it here.",
   "guest.connect.expired": "This list has expired. Send connect again.",
   "guest.connect.not_allowed": "Only the bot owner can use these buttons.",
+  "guest.connect.cancel": "✖️ Cancel",
+  "guest.connect.cancelled": "✖️ Cancelled.",
 
   "tasklist.empty": "📭 No scheduled tasks yet.",
   "tasklist.select": "Select a scheduled task:",

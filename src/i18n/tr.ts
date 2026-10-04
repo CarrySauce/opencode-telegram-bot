@@ -589,6 +589,8 @@ export const tr: I18nDictionary = {
   "guest.connect.no_reply": "🔗 Bağlandı. Oturumda henüz yanıt yok: burada devam etmek için bu mesajı yanıtla.",
   "guest.connect.expired": "Bu listenin süresi doldu. connect'i tekrar gönder.",
   "guest.connect.not_allowed": "Bu düğmeleri yalnızca bot sahibi kullanabilir.",
+  "guest.connect.cancel": "✖️ İptal",
+  "guest.connect.cancelled": "✖️ İptal edildi.",
 
   "tasklist.empty": "📭 Henüz zamanlanmış görev yok.",
   "tasklist.select": "Bir zamanlanmış görev seçin:",
