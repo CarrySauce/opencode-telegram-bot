@@ -675,18 +675,27 @@ describe("app/services/scheduled-task-executor-service", () => {
     expect(mocked.messagesMock).not.toHaveBeenCalled();
   });
 
-  it("leaves a watched session's pending request alone and stops waiting", async () => {
-    const { waitForScheduledTaskResult, ScheduledTaskInteractiveRequestError } = await import(
+  it("hands pending requests to the caller instead of rejecting them", async () => {
+    const { waitForScheduledTaskResult } = await import(
       "../../../src/app/services/scheduled-task-executor-service.js"
     );
-    mocked.permissionListMock.mockResolvedValueOnce({
-      data: [{ id: "permission-1", sessionID: "session-1", permission: "bash", patterns: [] }],
+    const permission = {
+      id: "permission-1",
+      sessionID: "session-1",
+      permission: "bash",
+      patterns: ["virsh undefine vm"],
+    };
+    mocked.permissionListMock.mockResolvedValueOnce({ data: [permission], error: null });
+    mocked.messagesMock.mockResolvedValue({
+      data: [createAssistantMessage("Deleted.", { completed: true })],
       error: null,
     });
+    const onInteractiveRequest = vi.fn();
 
     await expect(
-      waitForScheduledTaskResult("guest:-100", "session-1", "/infra", { rejectInteractive: false }),
-    ).rejects.toBeInstanceOf(ScheduledTaskInteractiveRequestError);
+      waitForScheduledTaskResult("guest:-100", "session-1", "/infra", { onInteractiveRequest }),
+    ).resolves.toBe("Deleted.");
+    expect(onInteractiveRequest).toHaveBeenCalledWith({ kind: "permission", request: permission });
     expect(mocked.permissionReplyMock).not.toHaveBeenCalled();
     expect(mocked.abortMock).not.toHaveBeenCalled();
   });

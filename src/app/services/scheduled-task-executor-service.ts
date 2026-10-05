@@ -37,7 +37,7 @@ type PendingPermissionRequest = {
   patterns?: string[];
 };
 
-type PendingInteractiveRequest =
+export type PendingInteractiveRequest =
   | { kind: "question"; request: PendingQuestionRequest }
   | { kind: "permission"; request: PendingPermissionRequest };
 
@@ -72,7 +72,7 @@ class ScheduledTaskEmptyAssistantResponseError extends Error {
   }
 }
 
-export class ScheduledTaskInteractiveRequestError extends Error {
+class ScheduledTaskInteractiveRequestError extends Error {
   constructor(kind: InteractiveRequestKind) {
     super(
       t(
@@ -347,16 +347,10 @@ async function failIfInteractiveRequest(
   taskId: string,
   sessionId: string,
   directory: string,
-  rejectInteractive: boolean,
 ): Promise<void> {
   const interactiveRequest = await loadPendingInteractiveRequest(sessionId, directory);
   if (!interactiveRequest) {
     return;
-  }
-
-  // A session the bot only watches belongs to someone else: its request stays for them to answer.
-  if (!rejectInteractive) {
-    throw new ScheduledTaskInteractiveRequestError(interactiveRequest.kind);
   }
 
   logger.warn("[ScheduledTaskExecutor] Scheduled task requested interactive action", {
@@ -398,7 +392,15 @@ export async function waitForScheduledTaskResult(
   taskId: string,
   sessionId: string,
   directory: string,
-  { rejectInteractive = true }: { rejectInteractive?: boolean } = {},
+  {
+    onInteractiveRequest,
+  }: {
+    /**
+     * Hands each poll's pending question or permission (or null once there is none) to the
+     * caller to get answered, instead of rejecting it and failing the run.
+     */
+    onInteractiveRequest?: (request: PendingInteractiveRequest | null) => void | Promise<void>;
+  } = {},
 ): Promise<string> {
   const startedAtMs = Date.now();
   const executionTimeoutMs = getExecutionTimeoutMs();
@@ -412,7 +414,11 @@ export async function waitForScheduledTaskResult(
       throw new Error(createExecutionTimeoutMessage());
     }
 
-    await failIfInteractiveRequest(taskId, sessionId, directory, rejectInteractive);
+    if (onInteractiveRequest) {
+      await onInteractiveRequest(await loadPendingInteractiveRequest(sessionId, directory));
+    } else {
+      await failIfInteractiveRequest(taskId, sessionId, directory);
+    }
 
     const assistantResult = await loadAssistantResult(sessionId, directory);
 

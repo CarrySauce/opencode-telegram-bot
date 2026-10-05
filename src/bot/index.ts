@@ -25,6 +25,10 @@ import {
   handleGuestConnectCallback,
   handleGuestMessage,
 } from "./handlers/guest-message-handler.js";
+import {
+  GUEST_PROMPT_CALLBACK_PREFIX,
+  handleGuestPromptCallback,
+} from "./handlers/guest-prompts.js";
 import { authMiddleware } from "./middleware/auth.js";
 import { interactionGuardMiddleware } from "./middleware/interaction-guard.js";
 import { staleUpdateMiddleware } from "./middleware/stale-update.js";
@@ -199,6 +203,7 @@ export function createBot(
       new RegExp(`^${GUEST_CONNECT_CALLBACK_PREFIX}(?:\\d+|cancel)$`),
       handleGuestConnectCallback,
     );
+    bot.callbackQuery(new RegExp(`^${GUEST_PROMPT_CALLBACK_PREFIX}`), handleGuestPromptCallback);
   }
   bot.use(staleUpdateMiddleware);
   bot.on("message:rich_message", normalizeRichMessage);

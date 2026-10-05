@@ -280,7 +280,7 @@ function formatOutcomeLine(outcome: PermissionOutcome): string {
  * Format permission request text, optionally closed by a status line. Patterns are cut
  * when the whole text would not fit into one Telegram message.
  */
-function formatPermissionText(
+export function formatPermissionText(
   request: PermissionRequest,
   groupedCount: number = 1,
   statusLine?: string,

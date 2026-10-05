@@ -9,6 +9,7 @@ const mocked = vi.hoisted(() => ({
   connectGuestThreadMock: vi.fn(),
   watchGuestSessionMock: vi.fn(),
   describeGuestActivityMock: vi.fn(),
+  answerGuestQuestionWithTextMock: vi.fn(),
   isGuestThreadRunningMock: vi.fn(),
   config: { bot: { messageFormatMode: "markdown" } },
 }));
@@ -20,6 +21,12 @@ vi.mock("../../../src/opencode/client.js", () => ({ opencodeClient: {} }));
 vi.mock("../../../src/utils/logger.js", () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
+
+vi.mock("../../../src/bot/handlers/guest-prompts.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../../src/bot/handlers/guest-prompts.js")>();
+  return { ...actual, answerGuestQuestionWithText: mocked.answerGuestQuestionWithTextMock };
+});
 
 vi.mock("../../../src/app/services/guest-session-service.js", async (importOriginal) => {
   const actual =
@@ -44,9 +51,8 @@ import {
 } from "../../../src/bot/handlers/guest-message-handler.js";
 import {
   GuestNoProjectError,
-  type GuestSessionRef,
+  type GuestTurnHooks,
 } from "../../../src/app/services/guest-session-service.js";
-import { ScheduledTaskInteractiveRequestError } from "../../../src/app/services/scheduled-task-executor-service.js";
 import type { GuestThreadInfo } from "../../../src/app/types/settings.js";
 
 const GUEST_CHAT_ID = -100123;
@@ -62,8 +68,8 @@ const THREAD: GuestThreadInfo = {
 };
 
 // Runs the turn the way a guest message does, through the mocked prompt.
-const promptRunner = (onSessionReady: (session: GuestSessionRef) => void) =>
-  mocked.runGuestPromptMock("1", undefined, "hi", onSessionReady) as Promise<string>;
+const promptRunner = (hooks: GuestTurnHooks) =>
+  mocked.runGuestPromptMock("1", undefined, "hi", hooks) as Promise<string>;
 
 function pendingReply(): { promise: Promise<string>; finish: (reply: string) => void } {
   let finish: (reply: string) => void = () => {};
@@ -109,6 +115,7 @@ describe("bot/handlers/guest-message-handler", () => {
     mocked.findGuestThreadMock.mockReturnValue(undefined);
     mocked.isGuestThreadRunningMock.mockReturnValue(false);
     mocked.describeGuestActivityMock.mockResolvedValue(null);
+    mocked.answerGuestQuestionWithTextMock.mockResolvedValue(null);
     __resetGuestMessageHandlerForTests();
   });
 
@@ -131,7 +138,7 @@ describe("bot/handlers/guest-message-handler", () => {
       String(GUEST_CHAT_ID),
       undefined,
       "what does this repo do?",
-      expect.any(Function),
+      expect.objectContaining({ onSessionReady: expect.any(Function) }),
     );
     expect(api.editMessageTextInline).toHaveBeenCalledWith("inline-1", "It is a *bot*\\.", {
       parse_mode: "MarkdownV2",
@@ -176,7 +183,7 @@ describe("bot/handlers/guest-message-handler", () => {
       String(GUEST_CHAT_ID),
       THREAD,
       "what did I ask before?",
-      expect.any(Function),
+      expect.objectContaining({ onSessionReady: expect.any(Function) }),
     );
   });
 
@@ -243,6 +250,23 @@ describe("bot/handlers/guest-message-handler", () => {
     await handleGuestMessage(createContext(api));
 
     expect(answeredText(api)).toBe(t("guest.busy"));
+    expect(mocked.runGuestPromptMock).not.toHaveBeenCalled();
+  });
+
+  it("takes a reply into a conversation waiting on its question as the answer", async () => {
+    mocked.findGuestThreadMock.mockReturnValue(THREAD);
+    mocked.isGuestThreadRunningMock.mockReturnValue(true);
+    mocked.answerGuestQuestionWithTextMock.mockResolvedValue("✍️ sent");
+    const api = createApi();
+
+    await handleGuestMessage(createContext(api, { text: "only vm-3d" }));
+
+    expect(mocked.answerGuestQuestionWithTextMock).toHaveBeenCalledWith(
+      api,
+      "session-1",
+      "only vm-3d",
+    );
+    expect(answeredText(api)).toBe("✍️ sent");
     expect(mocked.runGuestPromptMock).not.toHaveBeenCalled();
   });
 
@@ -314,7 +338,6 @@ describe("bot/handlers/guest-message-handler", () => {
 
   describe("runGuestTurn", () => {
     it.each([
-      [new ScheduledTaskInteractiveRequestError("permission"), "guest.error.interactive"],
       [new GuestNoProjectError(), "guest.error.no_project"],
       [new Error("boom"), "guest.error.generic"],
     ] as const)("reports %s on the guest message", async (error, key) => {
@@ -342,13 +365,8 @@ describe("bot/handlers/guest-message-handler", () => {
       vi.useFakeTimers();
       const pending = pendingReply();
       mocked.runGuestPromptMock.mockImplementation(
-        (
-          _chatId: string,
-          _thread: unknown,
-          _text: string,
-          onSessionReady: (s: unknown) => void,
-        ) => {
-          onSessionReady({ sessionId: "session-1", directory: "/work/repo" });
+        (_chatId: string, _thread: unknown, _text: string, hooks: GuestTurnHooks) => {
+          hooks.onSessionReady?.({ sessionId: "session-1", directory: "/work/repo" });
           return pending.promise;
         },
       );
@@ -400,13 +418,8 @@ describe("bot/handlers/guest-message-handler", () => {
       const pending = pendingReply();
       const activity = pendingReply();
       mocked.runGuestPromptMock.mockImplementation(
-        (
-          _chatId: string,
-          _thread: unknown,
-          _text: string,
-          onSessionReady: (s: unknown) => void,
-        ) => {
-          onSessionReady({ sessionId: "session-1", directory: "/work/repo" });
+        (_chatId: string, _thread: unknown, _text: string, hooks: GuestTurnHooks) => {
+          hooks.onSessionReady?.({ sessionId: "session-1", directory: "/work/repo" });
           return pending.promise;
         },
       );
@@ -510,7 +523,7 @@ describe("bot/handlers/guest-message-handler", () => {
       expect(mocked.watchGuestSessionMock).toHaveBeenCalledWith(
         String(GUEST_CHAT_ID),
         THREAD,
-        expect.any(Function),
+        expect.objectContaining({ onSessionReady: expect.any(Function) }),
       );
     });
 

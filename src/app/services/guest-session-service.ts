@@ -13,6 +13,7 @@ import { getStoredModel } from "./model-selection-service.js";
 import {
   loadAssistantResult,
   waitForScheduledTaskResult,
+  type PendingInteractiveRequest,
 } from "./scheduled-task-executor-service.js";
 import { registerScheduledTaskSessionIgnore } from "./scheduled-task-session-ignore-service.js";
 
@@ -175,6 +176,16 @@ export interface GuestSessionRef {
   directory: string;
 }
 
+/** How a guest turn follows along: which session it runs in, and what it is asked to answer. */
+export interface GuestTurnHooks {
+  onSessionReady?: (session: GuestSessionRef) => void;
+  /**
+   * Called on every poll with the question or permission the session waits on, or null once it
+   * waits on none. The request stays open until someone answers it, here or elsewhere.
+   */
+  onInteractiveRequest?: (request: PendingInteractiveRequest | null) => void | Promise<void>;
+}
+
 const ACTIVITY_MAX_CHARS = 128;
 
 type SessionPartSnapshot = {
@@ -233,13 +244,13 @@ export async function describeGuestActivity(session: GuestSessionRef): Promise<s
 /**
  * Runs one guest prompt to completion and returns the assistant's reply text. Continues
  * `thread` while its session still exists, otherwise starts a new session in the current project.
- * `onSessionReady` hears which session that is before the prompt is sent.
+ * `hooks.onSessionReady` hears which session that is before the prompt is sent.
  */
 export async function runGuestPrompt(
   chatId: string,
   thread: GuestThreadInfo | undefined,
   text: string,
-  onSessionReady?: (session: GuestSessionRef) => void,
+  hooks: GuestTurnHooks = {},
 ): Promise<string> {
   // Claimed before the first await, so a reply arriving right behind this one sees it running.
   let claimedSessionId = thread?.sessionId;
@@ -261,7 +272,7 @@ export async function runGuestPrompt(
     current = await updateThread(current, () => ({}));
     // Keeps background session tracking from mirroring the guest turn into the private chat.
     await registerScheduledTaskSessionIgnore(current.sessionId);
-    onSessionReady?.({ sessionId: current.sessionId, directory: current.directory });
+    hooks.onSessionReady?.({ sessionId: current.sessionId, directory: current.directory });
 
     const agent = await resolveProjectAgent(getStoredAgent());
     const model = getStoredModel();
@@ -283,6 +294,7 @@ export async function runGuestPrompt(
       `guest:${chatId}`,
       current.sessionId,
       current.directory,
+      { onInteractiveRequest: hooks.onInteractiveRequest ?? (() => {}) },
     );
     const replyKey = guestReplyKey(reply);
     if (replyKey) {
@@ -333,17 +345,17 @@ export async function connectGuestThread(
 
 /**
  * Follows a connected session: waits for the reply it is working on, or returns the last one it
- * gave when it is idle. Never answers or rejects the session's pending questions: it was started
- * elsewhere, and its owner answers them there.
+ * gave when it is idle. Its pending questions are offered through `hooks` like a guest turn's own,
+ * and can as well be answered wherever the session was started.
  */
 export async function watchGuestSession(
   chatId: string,
   thread: GuestThreadInfo,
-  onSessionReady?: (session: GuestSessionRef) => void,
+  hooks: GuestTurnHooks = {},
 ): Promise<string> {
   runningSessionIds.add(thread.sessionId);
   try {
-    onSessionReady?.({ sessionId: thread.sessionId, directory: thread.directory });
+    hooks.onSessionReady?.({ sessionId: thread.sessionId, directory: thread.directory });
 
     const { data: statuses, error } = await opencodeClient.session.status({
       directory: thread.directory,
@@ -359,7 +371,7 @@ export async function watchGuestSession(
         `guest:${chatId}`,
         thread.sessionId,
         thread.directory,
-        { rejectInteractive: false },
+        { onInteractiveRequest: hooks.onInteractiveRequest ?? (() => {}) },
       );
     } else {
       reply = (await loadAssistantResult(thread.sessionId, thread.directory)).resultText;
@@ -378,6 +390,41 @@ export async function watchGuestSession(
   } finally {
     runningSessionIds.delete(thread.sessionId);
   }
+}
+
+/** Sends the answers to a question, one list of chosen labels per question; false when refused. */
+export async function answerGuestQuestion(
+  directory: string,
+  requestID: string,
+  answers: string[][],
+): Promise<boolean> {
+  const { error } = await opencodeClient.question.reply({ requestID, directory, answers });
+  if (error) {
+    logger.warn(`[GuestSession] Question answer refused: requestID=${requestID}`, error);
+  }
+  return !error;
+}
+
+/** Dismisses a question without an answer; false when refused. */
+export async function dismissGuestQuestion(directory: string, requestID: string): Promise<boolean> {
+  const { error } = await opencodeClient.question.reject({ requestID, directory });
+  if (error) {
+    logger.warn(`[GuestSession] Question dismissal refused: requestID=${requestID}`, error);
+  }
+  return !error;
+}
+
+/** Answers a permission request; false when refused. */
+export async function replyGuestPermission(
+  directory: string,
+  requestID: string,
+  reply: "once" | "always" | "reject",
+): Promise<boolean> {
+  const { error } = await opencodeClient.permission.reply({ requestID, directory, reply });
+  if (error) {
+    logger.warn(`[GuestSession] Permission reply refused: requestID=${requestID}`, error);
+  }
+  return !error;
 }
 
 export function __resetGuestSessionsForTests(): void {

@@ -141,7 +141,9 @@ describe("app/services/guest-session-service", () => {
         model: { providerID: "openai", modelID: "gpt-5" },
         variant: "high",
       });
-      expect(mocked.waitMock).toHaveBeenCalledWith("guest:-100", "new-session", PROJECT_DIR);
+      expect(mocked.waitMock).toHaveBeenCalledWith("guest:-100", "new-session", PROJECT_DIR, {
+        onInteractiveRequest: expect.any(Function),
+      });
       expect(mocked.storedThreads).toEqual([
         expect.objectContaining({
           chatId: CHAT_ID,
@@ -434,7 +436,9 @@ describe("app/services/guest-session-service", () => {
       mocked.loadAssistantResultMock.mockResolvedValue({ resultText: "All VMs run." });
       const ready = vi.fn();
 
-      await expect(watchGuestSession(CHAT_ID, thread, ready)).resolves.toBe("All VMs run.");
+      await expect(watchGuestSession(CHAT_ID, thread, { onSessionReady: ready })).resolves.toBe(
+        "All VMs run.",
+      );
 
       expect(ready).toHaveBeenCalledWith({ sessionId: "ses-vm", directory: "/infra" });
       expect(mocked.loadAssistantResultMock).toHaveBeenCalledWith("ses-vm", "/infra");
@@ -461,7 +465,7 @@ describe("app/services/guest-session-service", () => {
 
       await expect(watch).resolves.toBe("Done.");
       expect(mocked.waitMock).toHaveBeenCalledWith("guest:-100", "ses-vm", "/infra", {
-        rejectInteractive: false,
+        onInteractiveRequest: expect.any(Function),
       });
       expect(isGuestThreadRunning(thread)).toBe(false);
     });

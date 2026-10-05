@@ -14,16 +14,23 @@ import {
   watchGuestSession,
   type GuestReplyTarget,
   type GuestSessionRef,
+  type GuestTurnHooks,
 } from "../../app/services/guest-session-service.js";
+import type { PendingInteractiveRequest } from "../../app/services/scheduled-task-executor-service.js";
 import type { SessionInfo } from "../../app/types/session.js";
 import type { GuestThreadInfo } from "../../app/types/settings.js";
-import { ScheduledTaskInteractiveRequestError } from "../../app/services/scheduled-task-executor-service.js";
 import { t } from "../../i18n/index.js";
 import { logger } from "../../utils/logger.js";
 import { safeBackgroundTask } from "../../utils/safe-background-task.js";
 import { convertToTelegramMarkdownV2 } from "../render/markdown-to-telegram-v2.js";
 import { TELEGRAM_TEXT_MESSAGE_LIMIT } from "../render/limits.js";
 import { isTelegramBadRequestError } from "../messages/send-with-markdown-fallback.js";
+import {
+  answerGuestQuestionWithText,
+  closeGuestPrompt,
+  isGuestPromptShown,
+  showGuestPrompt,
+} from "./guest-prompts.js";
 
 // A guest chat has exactly one message the bot may write to, so progress is shown by editing it.
 const PROGRESS_INTERVAL_MS = 10_000;
@@ -172,13 +179,10 @@ function describeGuestError(error: unknown): string {
   if (error instanceof GuestNoReplyError) {
     return t("guest.connect.no_reply");
   }
-  if (error instanceof ScheduledTaskInteractiveRequestError) {
-    return t("guest.error.interactive");
-  }
   return t("guest.error.generic");
 }
 
-type GuestTurnRunner = (onSessionReady: (session: GuestSessionRef) => void) => Promise<string>;
+type GuestTurnRunner = (hooks: GuestTurnHooks) => Promise<string>;
 
 /** Runs a guest turn and keeps the guest placeholder up to date until the reply replaces it. */
 export async function runGuestTurn(
@@ -199,7 +203,8 @@ export async function runGuestTurn(
           return null;
         })
       : null;
-    if (finished) {
+    // A question drawn on the message stays until it is answered.
+    if (finished || isGuestPromptShown(inlineMessageId)) {
       return;
     }
     const working = t("guest.working", { elapsed: formatDuration(Date.now() - startedAt) });
@@ -221,12 +226,46 @@ export async function runGuestTurn(
   const stopProgress = async (): Promise<void> => {
     finished = true;
     clearInterval(progressTimer);
+    closeGuestPrompt(inlineMessageId);
     await progressTick;
   };
 
+  // Requests drawn once are not drawn again while OpenCode still lists them after an answer.
+  const drawnRequestIds = new Set<string>();
+  let shownRequestId: string | undefined;
+  const onInteractiveRequest = async (pending: PendingInteractiveRequest | null): Promise<void> => {
+    if (finished || !session) {
+      return;
+    }
+    if (!pending) {
+      // Answered elsewhere (the private chat, the TUI): back to progress right away.
+      if (shownRequestId && closeGuestPrompt(inlineMessageId)) {
+        await editGuestMessage(
+          api,
+          inlineMessageId,
+          t("guest.working", { elapsed: formatDuration(Date.now() - startedAt) }),
+        ).catch(() => {});
+      }
+      shownRequestId = undefined;
+      return;
+    }
+    if (drawnRequestIds.has(pending.request.id)) {
+      return;
+    }
+    drawnRequestIds.add(pending.request.id);
+    shownRequestId = pending.request.id;
+    await progressTick;
+    await showGuestPrompt(api, inlineMessageId, session, pending).catch((error: unknown) => {
+      logger.warn(`[Guest] Could not show ${pending.kind}: chatId=${chatId}`, error);
+    });
+  };
+
   try {
-    const reply = await runTurn((readySession) => {
-      session = readySession;
+    const reply = await runTurn({
+      onSessionReady: (readySession) => {
+        session = readySession;
+      },
+      onInteractiveRequest,
     });
     await stopProgress();
     await editGuestReply(api, inlineMessageId, reply);
@@ -291,7 +330,9 @@ export async function handleGuestMessage(ctx: Context): Promise<void> {
   // A reply to one of the bot's messages continues that conversation; anything else starts one.
   const thread = findGuestThread(chatId, getBotReplyTarget(message, ctx.me?.id));
   if (thread && isGuestThreadRunning(thread)) {
-    await answerWithText(ctx, guestQueryId, t("guest.busy"));
+    // While the conversation waits on its question, a reply into it is the typed answer.
+    const answered = await answerGuestQuestionWithText(ctx.api, thread.sessionId, text);
+    await answerWithText(ctx, guestQueryId, answered ?? t("guest.busy"));
     return;
   }
   if ((activeTurnsByChat.get(chatId) ?? 0) >= MAX_CONCURRENT_TURNS_PER_CHAT) {
@@ -318,8 +359,8 @@ export async function handleGuestMessage(ctx: Context): Promise<void> {
   safeBackgroundTask({
     taskName: "guest.turn",
     task: () =>
-      runGuestTurn(ctx.api, inlineMessageId, chatId, (onSessionReady) =>
-        runGuestPrompt(chatId, thread, text, onSessionReady),
+      runGuestTurn(ctx.api, inlineMessageId, chatId, (hooks) =>
+        runGuestPrompt(chatId, thread, text, hooks),
       ),
   });
 }
@@ -424,8 +465,8 @@ export async function handleGuestConnectCallback(ctx: Context): Promise<void> {
   safeBackgroundTask({
     taskName: "guest.connect",
     task: () =>
-      runGuestTurn(ctx.api, inlineMessageId, chatId, (onSessionReady) =>
-        watchGuestSession(chatId, thread, onSessionReady),
+      runGuestTurn(ctx.api, inlineMessageId, chatId, (hooks) =>
+        watchGuestSession(chatId, thread, hooks),
       ),
   });
 }
